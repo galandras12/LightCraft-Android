@@ -13,7 +13,8 @@ WORK=target/apk
 cargo ndk -t arm64-v8a --platform 29 -o jniLibs build --release
 rm -rf "$WORK" && mkdir -p "$WORK/lib/arm64-v8a"
 cp jniLibs/arm64-v8a/liblightcraft_android.so "$WORK/lib/arm64-v8a/"
-"$BT/aapt2" link --manifest android/AndroidManifest.xml -I "$JAR" --min-sdk-version 29 --target-sdk-version 34 -o "$WORK/base.apk"
+"$BT/aapt2" compile --dir android/res -o "$WORK/res.zip"
+"$BT/aapt2" link -R "$WORK/res.zip" --manifest android/AndroidManifest.xml -I "$JAR" --min-sdk-version 29 --target-sdk-version 34 -o "$WORK/base.apk"
 (cd "$WORK" && zip -q -0 -r base.apk lib)   # .so stored uncompressed: page-aligned, mmap-able
 mkdir -p Debug
 rm -f "$OUT"
