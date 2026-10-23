@@ -1,0 +1,20 @@
+[package]
+name = "lightcraft-android"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Android host for LightCraft (egui + wgpu over NativeActivity)"
+
+[lib]
+name = "lightcraft_android"
+crate-type = ["cdylib"]
+
+[dependencies]
+lightcraft-engine = { git = "https://github.com/storytold/lightcraft", rev = "1c03b7b18f3a8219b034ad384477bf2f8d767585" }
+lightcraft-ui-egui = { git = "https://github.com/storytold/lightcraft", rev = "1c03b7b18f3a8219b034ad384477bf2f8d767585" }
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "android-native-activity"] }
+egui = "0.36"
+android-activity = { version = "0.6", features = ["native-activity"] }
+log = "0.4"
+android_logger = "0.15"
