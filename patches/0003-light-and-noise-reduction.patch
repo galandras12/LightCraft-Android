@@ -1,0 +1,741 @@
+Android port: better Auto light and wavelet noise reduction.
+
+* `develop.auto` (pipeline/src/auto.rs): the Exposure still follows the calibrated rule on the scene's
+  log-average luminance, but Highlights, Whites, Shadows, Blacks, Contrast and Vibrance now adapt to the
+  picture (clipping headroom, share of deep shadows, tonal range, colourfulness) within bounds, instead of
+  being fixed numbers.
+* Noise reduction (pipeline/src/nr.rs, local.rs): a stationary wavelet (a trous) shrinkage with a noise level
+  measured from the picture itself replaces the guided filter and the chromaticity blur. Luminance is
+  cleaned in the log luminance, colour noise in the log chromaticity with more levels.
+* The GPU render (gpu/src/render.rs) reads the picture back for the noise reduction stage when it is on
+  and filters it on the CPU (the filter exists on the CPU only).
+diff --git a/crates/gpu/src/render.rs b/crates/gpu/src/render.rs
+index 0c5bd19..22b73f7 100644
+--- a/crates/gpu/src/render.rs
++++ b/crates/gpu/src/render.rs
+@@ -819,28 +819,19 @@ fn linear(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, ho
+ }
+ 
+ /// Noise reduction (`local::denoise`).
++///
++/// Android port: the noise reduction is a wavelet filter that exists on the CPU only ([`local::apply_nr`]), so when
++/// it is on, the picture is read back, filtered there and uploaded again. With both sliders at zero nothing
++/// happens and the picture stays on the GPU.
+ fn denoise(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>) -> Buf {
+     let (w, h) = (plan.w, plan.h);
+-    let n = w * h;
+     let (lum, col) = local::nr_params(&plan.settings, plan.detail_scale);
+-    let mut img = img;
+-    if let Some(nr) = lum {
+-        let l = cx.gpu.buffer(n);
+-        map(cx, "log_lum_k", n, &[], [Some(&img), None, None], &l);
+-        let f = guided(cx, &l, w, h, nr.sigma, nr.eps);
+-        let out = cx.gpu.buffer(n * 3);
+-        map(cx, "nr_lum", n, &[nr.k.to_bits()], [Some(&img), Some(&l), Some(&f)], &out);
+-        img = out;
+-    }
+-    if let Some(nr) = col {
+-        let chroma = cx.gpu.buffer(n * 3);
+-        map(cx, "chroma_k", n, &[], [Some(&img), None, None], &chroma);
+-        let b = gaussian(cx, &chroma, w, h, 3, nr.sigma);
+-        let out = cx.gpu.buffer(n * 3);
+-        map(cx, "nr_col", n, &[nr.t.to_bits()], [Some(&img), Some(&chroma), Some(&b)], &out);
+-        img = out;
++    if lum.is_none() && col.is_none() {
++        return img;
+     }
+-    img
++    let mut cpu = cx.read_rgb(&img, w, h);
++    local::apply_nr(&mut cpu, lum, col);
++    cx.gpu.upload(rgb_words(&cpu))
+ }
+ 
+ /// The planes the per-pixel stage reads.
+diff --git a/crates/pipeline/src/auto.rs b/crates/pipeline/src/auto.rs
+index f3259b5..67925f5 100644
+--- a/crates/pipeline/src/auto.rs
++++ b/crates/pipeline/src/auto.rs
+@@ -40,11 +40,10 @@ const SHADOWS: f64 = 52.0;
+ const CONTRAST: f64 = 68.0;
+ const VIBRANCE: f64 = 30.0;
+ 
+-/// The scene's log-average luminance under the current white balance, in EV relative to middle grey
+-/// (the mean of log2(Y / 0.18) over a 512 px proxy, scene-linear, before any tone curve). Pixels that
+-/// aren't finite (a damaged decode) are left out: they get no weight when the proxy is made, and
+-/// proxy pixels made only of them are skipped. `None` when no pixel is valid.
+-pub fn scene_log_mean(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Option<f64> {
++/// The valid pixels of a 512 px proxy of `src`, scene-linear under the white balance of `s` (before any tone
++/// curve). Pixels that aren't finite (a damaged decode) are left out: they get no weight when the proxy is made,
++/// and proxy pixels made only of them are skipped. `None` when no pixel is valid.
++fn scene_samples(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Option<Rgb32f> {
+     let (mut clean, mut weight) = (src.clone(), Rgb32f::new(src.width, src.height));
+     let mut any = false;
+     for (p, w) in clean.data.iter_mut().zip(weight.data.iter_mut()) {
+@@ -66,32 +65,71 @@ pub fn scene_log_mean(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> O
+     let base = DevelopSettings { wb: s.wb, process: s.process, ..DevelopSettings::default() };
+     // (white balance is per pixel: the valid pixels can be balanced in a row of their own)
+     crate::local::scene_linear_pre(&mut kept, info, &base);
+-    let (mut sum, mut n) = (0f64, 0usize);
+-    for c in &kept.data {
+-        let ev = (luminance_2020(*c).max(1e-6) / 0.18).log2();
+-        if ev.is_finite() {
+-            sum += ev as f64;
+-            n += 1;
+-        }
++    (!kept.data.is_empty()).then_some(kept)
++}
++
++/// The brightness of each sample in EV relative to middle grey (`log2(Y / 0.18)`); samples whose luminance is not
++/// finite are left out.
++fn scene_ev(samples: &Rgb32f) -> Vec<f64> {
++    samples
++        .data
++        .iter()
++        .map(|c| f64::from((luminance_2020(*c).max(1e-6) / 0.18).log2()))
++        .filter(|ev| ev.is_finite())
++        .collect()
++}
++
++/// The scene's log-average luminance under the current white balance, in EV relative to middle grey
++/// (the mean of log2(Y / 0.18) over a 512 px proxy, scene-linear, before any tone curve). `None` when no pixel is valid.
++pub fn scene_log_mean(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Option<f64> {
++    let ev = scene_ev(&scene_samples(src, info, s)?);
++    (!ev.is_empty()).then(|| ev.iter().sum::<f64>() / ev.len() as f64)
++}
++
++/// The `q` quantile (0..1) of an ascending list; 0 for an empty one.
++fn quantile(sorted: &[f64], q: f64) -> f64 {
++    let last = sorted.len().saturating_sub(1);
++    let i = ((last as f64) * q.clamp(0.0, 1.0)).round() as usize;
++    sorted.get(i.min(last)).copied().unwrap_or(0.0)
++}
++
++/// Smooth 0 → 1 ramp between `lo` and `hi` (flipped when `lo > hi`).
++fn ramp(x: f64, lo: f64, hi: f64) -> f64 {
++    if (hi - lo).abs() < 1e-12 {
++        return if x < lo { 0.0 } else { 1.0 };
+     }
+-    (n > 0).then(|| sum / n as f64)
++    let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
++    t * t * (3.0 - 2.0 * t)
+ }
+ 
+-/// Auto settings for `src` under the current white balance (ignores current tone values), aiming at
+-/// what Lightroom's Auto does: the Exposure a scene needs follows its log-average luminance
+-/// ([`scene_log_mean`], scene-linear, so the rule doesn't depend on the base tone curve), and the
+-/// other sliders are one fixed recipe. Calibrated black-box against Lightroom's observed behaviour
+-/// (the values its Auto chose and its exported results) on 24 Sony raw photos, of which 16 have a
+-/// starting look that Sony's in-camera DRO doesn't brighten. Held out one photo at a time, those 16
+-/// come out at a median dE76 of 6.4 from Lightroom's Auto results (8.3 unedited; 18.8 with the
+-/// previous percentile rule, which ended about 16 L* too bright); all 24 at 7.7 (7.9 unedited).
+-/// Rendered sources (JPEGs) are already toned, so their log-average reads brighter and Auto changes
+-/// their exposure less. A source without a single valid pixel gets Exposure 0 (and the rest of the
+-/// recipe).
++/// EV of display white (scene-linear 1.0) relative to middle grey: `log2(1 / 0.18)`.
++const WHITE_EV: f64 = 2.474;
++
++/// Auto settings for `src` under the current white balance (ignores current tone values).
++///
++/// The Exposure follows the scene's log-average luminance ([`scene_log_mean`], scene-linear, so the rule does not
++/// depend on the base tone curve), with the slope and offset calibrated black-box against Lightroom's observed
++/// behaviour on 24 Sony raw photos (median dE76 of 6.4 from its Auto results, held out one photo at a time).
++///
++/// The other sliders start from the same calibrated recipe ([`HIGHLIGHTS`], [`SHADOWS`], [`CONTRAST`],
++/// [`VIBRANCE`]) but adapt to what the picture holds once that exposure is applied (the statistics are those of
++/// the 512 px proxy, in EV):
++/// * **Highlights** and **Whites**: a picture that reaches or passes display white gets stronger Highlights and
++///   a negative Whites; one that stops well short of it gets gentler Highlights and a positive Whites, which
++///   opens the top of the range.
++/// * **Shadows** and **Blacks**: the more of the picture lies in deep shadow, the more Shadows lifts it; a
++///   picture without deep shadows, or with milky blacks, gets a lower Shadows and a negative Blacks that sets
++///   the black point. A mostly dark scene (night, stars) keeps its blacks.
++/// * **Contrast**: a flat picture (a narrow tonal range) gets more, a picture that already spans a wide range
++///   gets less.
++/// * **Vibrance**: a dull picture gets more, a colourful one less.
++///
++/// Rendered sources (JPEGs) are already toned, so their statistics differ; the adaptation is bounded, so a
++/// source stays within a sensible span of the calibrated recipe. A source without a single valid pixel gets
++/// Exposure 0 and the calibrated recipe.
+ pub fn auto_tone(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> AutoTone {
+-    let exposure = scene_log_mean(src, info, s).map_or(0.0, |m| (EXPOSURE_AT_GREY + EXPOSURE_SLOPE * m).clamp(-2.0, 3.0));
+-    AutoTone {
+-        exposure: (exposure * 100.0).round() / 100.0,
++    let recipe = AutoTone {
++        exposure: 0.0,
+         contrast: CONTRAST,
+         highlights: HIGHLIGHTS,
+         shadows: SHADOWS,
+@@ -99,6 +137,57 @@ pub fn auto_tone(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> AutoTo
+         blacks: 0.0,
+         vibrance: VIBRANCE,
+         saturation: 0.0,
++    };
++    let Some(samples) = scene_samples(src, info, s) else { return recipe };
++    let ev = scene_ev(&samples);
++    if ev.is_empty() {
++        return recipe;
++    }
++    let mean = ev.iter().sum::<f64>() / ev.len() as f64;
++    let exposure = (EXPOSURE_AT_GREY + EXPOSURE_SLOPE * mean).clamp(-2.0, 3.0);
++    let exposure = (exposure * 100.0).round() / 100.0;
++
++    // the brightness distribution once the exposure is applied
++    let mut lit: Vec<f64> = ev.iter().map(|v| v + exposure).collect();
++    lit.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
++    let (p1, p99) = (quantile(&lit, 0.01), quantile(&lit, 0.99));
++    let range = p99 - p1;
++    // how far the bright end is from display white (negative: past it)
++    let headroom = WHITE_EV - p99;
++    // the share of the picture in deep shadow (more than 3 EV under middle grey)
++    let dark = lit.iter().filter(|v| **v < -3.0).count() as f64 / lit.len() as f64;
++    // a mostly dark scene (night, stars): the blacks are the picture
++    let night = ramp(dark, 0.45, 0.75);
++
++    let highlights = if headroom < 0.0 {
++        (HIGHLIGHTS + 25.0 * headroom).max(-100.0)
++    } else {
++        HIGHLIGHTS * (1.0 - 0.6 * ramp(headroom, 1.0, 2.5))
++    };
++    let whites = if headroom > 0.5 { (22.0 * (headroom - 0.5)).min(35.0) * (1.0 - night) } else { (18.0 * headroom).max(-35.0).min(0.0) };
++    let shadows = (30.0 + 55.0 * ramp(dark, 0.02, 0.35)).min(85.0) * (if p1 > -2.5 { 0.65 } else { 1.0 });
++    let blacks = if p1 > -4.0 { -(14.0 * (p1 + 4.0)).min(40.0) * (1.0 - night) } else { 0.0 };
++    let contrast = (CONTRAST + 6.0 * (7.0 - range)).clamp(30.0, 85.0);
++
++    // the average colourfulness of the picture, as Oklab chroma
++    let chroma = {
++        use lightcraft_color::perceptual::{lab_to_lch, oklab_from_2020};
++        let gain = 2f32.powf(exposure as f32);
++        let n = samples.data.len().max(1) as f64;
++        samples.data.iter().map(|p| f64::from(lab_to_lch(oklab_from_2020(p.map(|v| (v * gain).max(0.0))))[1])).filter(|c| c.is_finite()).sum::<f64>() / n
++    };
++    let vibrance = VIBRANCE + 10.0 * (1.0 - ramp(chroma, 0.03, 0.08)) - 15.0 * ramp(chroma, 0.08, 0.14);
++
++    let round = |v: f64| (v * 100.0).round() / 100.0;
++    AutoTone {
++        exposure,
++        contrast: round(contrast),
++        highlights: round(highlights.clamp(-100.0, 0.0)),
++        shadows: round(shadows.clamp(0.0, 100.0)),
++        whites: round(whites.clamp(-100.0, 100.0)),
++        blacks: round(blacks.clamp(-100.0, 100.0)),
++        vibrance: round(vibrance.clamp(0.0, 100.0)),
++        saturation: 0.0,
+     }
+ }
+ 
+diff --git a/crates/pipeline/src/lib.rs b/crates/pipeline/src/lib.rs
+index 34df1f8..71db984 100644
+--- a/crates/pipeline/src/lib.rs
++++ b/crates/pipeline/src/lib.rs
+@@ -30,6 +30,7 @@ pub mod cull;
+ pub mod dust;
+ pub mod finish;
+ pub mod geometry;
++pub mod nr;
+ pub mod local;
+ pub mod local_tone;
+ pub mod lut;
+diff --git a/crates/pipeline/src/local.rs b/crates/pipeline/src/local.rs
+index ba02982..416961c 100644
+--- a/crates/pipeline/src/local.rs
++++ b/crates/pipeline/src/local.rs
+@@ -297,6 +297,11 @@ pub struct NrLum {
+     pub sigma: f32,
+     pub eps: f32,
+     pub k: f32,
++    /// Android port: the wavelet filter ([`crate::nr`]) is driven by these: the strength (the Luminance slider),
++    /// and how much fine detail (Detail) and coarse contrast (Contrast) it keeps, all 0..1.
++    pub strength: f32,
++    pub detail: f32,
++    pub contrast: f32,
+ }
+ 
+ /// Colour noise reduction: chromaticity blurred by `sigma` px, mixed in by `t`.
+@@ -304,6 +309,10 @@ pub struct NrLum {
+ pub struct NrColor {
+     pub sigma: f32,
+     pub t: f32,
++    /// Android port: the strength (the Color slider), Color Detail and Smoothness of the wavelet filter ([`crate::nr`]), 0..1.
++    pub strength: f32,
++    pub detail: f32,
++    pub smoothness: f32,
+ }
+ 
+ /// Output pixels per pixel of the original photo for an output of `px_per_long` pixels per unit
+@@ -344,12 +353,25 @@ pub fn nr_params(s: &DevelopSettings, scale: f32) -> (Option<NrLum>, Option<NrCo
+     let l = (lum > 0.0).then(|| nr_radius((1.0 + 2.5 * lum) * scale)).filter(|&(_, w)| w >= NR_MIN_BLEND).map(|(sigma, w)| {
+         let detail = (s.detail.nr_detail / 100.0) as f32;
+         let eps = ((0.002 + lum * lum * 0.25 * (1.0 - 0.7 * detail)) * scale * scale).max(1e-7);
+-        NrLum { sigma, eps, k: lum.sqrt() * w }
++        NrLum {
++            sigma,
++            eps,
++            k: lum.sqrt() * w,
++            strength: lum,
++            detail,
++            contrast: (s.detail.nr_contrast / 100.0) as f32,
++        }
+     });
+     let smooth = 1.0 + (s.detail.nr_color_smoothness / 100.0) as f32;
+     let c = (col > 0.0).then(|| nr_radius((1.5 + 6.0 * col) * scale * smooth)).filter(|&(_, w)| w >= NR_MIN_BLEND).map(|(sigma, w)| {
+         let keep = (s.detail.nr_color_detail / 100.0) as f32 * 0.5;
+-        NrColor { sigma, t: col * (1.0 - keep) * w }
++        NrColor {
++            sigma,
++            t: col * (1.0 - keep) * w,
++            strength: col,
++            detail: (s.detail.nr_color_detail / 100.0) as f32,
++            smoothness: (s.detail.nr_color_smoothness / 100.0) as f32,
++        }
+     });
+     (l, c)
+ }
+@@ -363,42 +385,23 @@ pub fn denoise(img: &mut Rgb32f, s: &DevelopSettings, scale: f32) {
+ }
+ 
+ /// Noise reduction with explicit parameters (see [`denoise`]).
++///
++/// Android port: wavelet shrinkage ([`crate::nr`]) instead of the guided filter and the chromaticity blur: it
++/// measures the noise of the picture itself and keeps edges and texture at strengths where a blur smears them.
++/// Colour noise goes first, so that the luminance pass measures luminance noise only.
+ pub fn apply_nr(img: &mut Rgb32f, lum: Option<NrLum>, col: Option<NrColor>) {
+-    let w = img.width;
+-    if let Some(nr) = lum {
++    if let Some(nr) = col {
+         let _t = crate::profiling().then(std::time::Instant::now);
+-        let l = img.map(log_lum);
+-        let f = guided(&l, nr.sigma, nr.eps);
+-        for_rows(&mut img.data, w, |y, row| {
+-            for (x, p) in row.iter_mut().enumerate() {
+-                let i = y * w + x;
+-                let d = (f.data[i] - l.data[i]) * nr.k;
+-                let g = d.exp2();
+-                *p = p.map(|v| v * g);
+-            }
+-        });
++        crate::nr::denoise_chroma(img, nr.strength, nr.detail, nr.smoothness);
+         if let Some(t) = _t {
+-            eprintln!("    nr luminance: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
++            eprintln!("    nr colour: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+         }
+     }
+-    if let Some(nr) = col {
++    if let Some(nr) = lum {
+         let _t = crate::profiling().then(std::time::Instant::now);
+-        let chroma = img.map(|c| {
+-            let y = luminance_2020(c).max(1e-6);
+-            [c[0] / y, c[1] / y, c[2] / y]
+-        });
+-        let b = gaussian(&chroma, nr.sigma);
+-        for_rows(&mut img.data, w, |y, row| {
+-            for (x, p) in row.iter_mut().enumerate() {
+-                let i = y * w + x;
+-                let yl = luminance_2020(*p);
+-                let c0 = chroma.data[i];
+-                let cb = b.data[i];
+-                *p = [0, 1, 2].map(|k| ((c0[k] + (cb[k] - c0[k]) * nr.t) * yl).max(0.0));
+-            }
+-        });
++        crate::nr::denoise_luminance(img, nr.strength, nr.detail, nr.contrast);
+         if let Some(t) = _t {
+-            eprintln!("    nr colour: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
++            eprintln!("    nr luminance: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+         }
+     }
+ }
+diff --git a/crates/pipeline/src/nr.rs b/crates/pipeline/src/nr.rs
+new file mode 100644
+index 0000000..bffa62a
+--- /dev/null
++++ b/crates/pipeline/src/nr.rs
+@@ -0,0 +1,390 @@
++//! Wavelet noise reduction (Android port).
++//!
++//! The picture is split into detail bands with the stationary ("à trous") wavelet transform: each
++//! level blurs the previous one with the 5-tap B3-spline kernel spread over `2^level` pixels, and
++//! the detail band of that level is the difference between the two. Noise lives in the fine bands
++//! as many small coefficients; real edges and texture are the few large ones. Shrinking the small
++//! coefficients and adding the bands back removes the noise without blurring the edges, which is
++//! what a plain blur or a guided filter cannot do at high strength.
++//!
++//! * The noise level is measured from the picture itself, per 32 × 32 block, as the median
++//!   absolute value of the finest band (the robust estimator of Donoho and Johnstone); the lowest
++//!   estimate of the 3 × 3 neighbouring blocks is used so that an edge does not pass for noise.
++//!   The level follows the brightness, which matters because noise is stronger in the shadows.
++//! * A coefficient is attenuated by a smooth gain that is 0 below a threshold of `T` and 1 above
++//!   `2T`, where `T` is the local noise level of that band times the strength.
++//! * Luminance is cleaned in the logarithm of the luminance, colour noise in the logarithm of the
++//!   chromaticity (`rgb / Y`), with more levels, because colour noise comes in blotches.
++//!
++//! The sliders map to it as: *Luminance* / *Color* = strength, *Detail* = how little the finest
++//! bands are thresholded, *Contrast* = how little the coarse luminance bands are thresholded,
++//! *Color Detail* = as Detail for colour, *Smoothness* = how much the coarse colour bands are
++//! thresholded.
++//!
++//! The functions never panic: a non-finite sample counts as zero and a picture smaller than the
++//! kernel is returned unchanged.
++
++use lightcraft_color::luminance_2020;
++use lightcraft_raster::{Plane, Rgb32f};
++
++use crate::for_rows;
++
++/// The B3-spline kernel of the à trous transform.
++const KERNEL: [f32; 5] = [1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0];
++
++/// Standard deviation of the detail band of level `j` per unit of the white noise in the input
++/// (2D B3-spline à trous), divided by that of level 0. Real noise is correlated (demosaicing,
++/// the camera's own smoothing), so its coarse bands hold more than white noise would: these are
++/// [`BAND_RATIO`] multiplied by a correlation allowance.
++const BAND_RATIO: [f32; 6] = [1.0, 0.225 * 1.5, 0.097 * 2.0, 0.046 * 2.4, 0.0225 * 2.8, 0.0112 * 3.0];
++
++/// Side of the blocks the noise level is measured in, in pixels.
++const BLOCK: usize = 32;
++
++/// The picture smaller than this on a side is not filtered.
++const MIN_SIDE: usize = 8;
++
++/// How strongly a band is thresholded: the strength of the whole filter, and per-band factors
++/// (1 = the full threshold of the strength).
++#[derive(Clone, Copy, Debug)]
++struct Bands {
++    /// 0..1, from the slider.
++    strength: f32,
++    /// Number of detail bands (levels) to clean.
++    levels: usize,
++    /// Per level multiplier of the threshold; levels past the end use the last.
++    factors: [f32; 6],
++}
++
++/// The noise level (standard deviation of the finest band) measured per block, read back with
++/// bilinear interpolation.
++struct NoiseGrid {
++    bw: usize,
++    bh: usize,
++    values: Vec<f32>,
++}
++
++impl NoiseGrid {
++    /// The noise level at pixel `(x, y)`.
++    fn at(&self, x: usize, y: usize) -> f32 {
++        let u = (x as f32 + 0.5) / BLOCK as f32 - 0.5;
++        let v = (y as f32 + 0.5) / BLOCK as f32 - 0.5;
++        let (u0, v0) = (u.floor().max(0.0), v.floor().max(0.0));
++        let (fu, fv) = ((u - u0).clamp(0.0, 1.0), (v - v0).clamp(0.0, 1.0));
++        let at = |i: f32, j: f32| -> f32 {
++            let (i, j) = ((i as usize).min(self.bw.saturating_sub(1)), (j as usize).min(self.bh.saturating_sub(1)));
++            self.values.get(j * self.bw + i).copied().unwrap_or(0.0)
++        };
++        let top = at(u0, v0) * (1.0 - fu) + at(u0 + 1.0, v0) * fu;
++        let bottom = at(u0, v0 + 1.0) * (1.0 - fu) + at(u0 + 1.0, v0 + 1.0) * fu;
++        top * (1.0 - fv) + bottom * fv
++    }
++}
++
++/// Reflects an index into `0..n` (mirror without repeating the edge sample).
++fn reflect(i: isize, n: usize) -> usize {
++    let n = n as isize;
++    if n <= 1 {
++        return 0;
++    }
++    let mut i = if i < 0 { -i } else { i };
++    if i >= n {
++        i = 2 * (n - 1) - i;
++    }
++    i.clamp(0, n - 1) as usize
++}
++
++/// One à trous smoothing: the B3-spline kernel with its taps `step` pixels apart, along rows then columns.
++fn atrous(p: &Plane, step: usize) -> Plane {
++    let (w, h) = (p.width, p.height);
++    let step = step as isize;
++    let mut tmp = Plane::new(w, h);
++    // along the rows
++    for_rows(&mut tmp.data, w, |y, row| {
++        let src = p.data.get(y * w..(y + 1) * w).unwrap_or(&[]);
++        for (x, out) in row.iter_mut().enumerate() {
++            let mut acc = 0.0;
++            for (k, weight) in KERNEL.iter().enumerate() {
++                let xi = reflect(x as isize + (k as isize - 2) * step, w);
++                acc += weight * src.get(xi).copied().unwrap_or(0.0);
++            }
++            *out = acc;
++        }
++    });
++    // along the columns
++    let mut out = Plane::new(w, h);
++    for_rows(&mut out.data, w, |y, row| {
++        let rows: [&[f32]; 5] = std::array::from_fn(|k| {
++            let yi = reflect(y as isize + (k as isize - 2) * step, h);
++            tmp.data.get(yi * w..(yi + 1) * w).unwrap_or(&[])
++        });
++        for (x, o) in row.iter_mut().enumerate() {
++            let mut acc = 0.0;
++            for (weight, r) in KERNEL.iter().zip(rows) {
++                acc += weight * r.get(x).copied().unwrap_or(0.0);
++            }
++            *o = acc;
++        }
++    });
++    out
++}
++
++/// Measures the noise level of the finest band `fine - coarse` per block.
++fn noise_grid(fine: &Plane, coarse: &Plane) -> NoiseGrid {
++    let (w, h) = (fine.width, fine.height);
++    let bw = w.div_ceil(BLOCK).max(1);
++    let bh = h.div_ceil(BLOCK).max(1);
++    let mut estimates = vec![0.0f32; bw * bh];
++    let mut scratch: Vec<f32> = Vec::with_capacity(BLOCK * BLOCK / 4);
++    for by in 0..bh {
++        for bx in 0..bw {
++            scratch.clear();
++            let (x0, y0) = (bx * BLOCK, by * BLOCK);
++            for y in (y0..(y0 + BLOCK).min(h)).step_by(2) {
++                for x in (x0..(x0 + BLOCK).min(w)).step_by(2) {
++                    let i = y * w + x;
++                    let d = (fine.data.get(i).copied().unwrap_or(0.0) - coarse.data.get(i).copied().unwrap_or(0.0)).abs();
++                    if d.is_finite() {
++                        scratch.push(d);
++                    }
++                }
++            }
++            if scratch.is_empty() {
++                continue;
++            }
++            let mid = scratch.len() / 2;
++            let (_, median, _) = scratch.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
++            // median of |N(0, s)| is 0.6745 s; the 1.1 makes up for the low bias of taking the lowest of nine estimates
++            if let Some(e) = estimates.get_mut(by * bw + bx) {
++                *e = *median / 0.6745 * 1.1;
++            }
++        }
++    }
++    // the lowest estimate of the neighbourhood: an edge raises the median of its block, noise does not
++    let mut values = estimates.clone();
++    for by in 0..bh {
++        for bx in 0..bw {
++            let mut low = f32::MAX;
++            for ny in by.saturating_sub(1)..(by + 2).min(bh) {
++                for nx in bx.saturating_sub(1)..(bx + 2).min(bw) {
++                    low = low.min(estimates.get(ny * bw + nx).copied().unwrap_or(f32::MAX));
++                }
++            }
++            if let Some(v) = values.get_mut(by * bw + bx) {
++                *v = if low == f32::MAX { 0.0 } else { low };
++            }
++        }
++    }
++    NoiseGrid { bw, bh, values }
++}
++
++/// Shrinks the detail band `fine - coarse` and adds it to `acc`.
++fn shrink_into(fine: &Plane, coarse: &Plane, acc: &mut Plane, grid: &NoiseGrid, level: usize, bands: &Bands) {
++    let w = fine.width;
++    let ratio = BAND_RATIO.get(level).or(BAND_RATIO.last()).copied().unwrap_or(0.0);
++    let factor = bands.factors.get(level).or(bands.factors.last()).copied().unwrap_or(1.0);
++    // at full strength a coefficient starts to pass from 2.3 sigma of its band and passes whole from 4.6 sigma
++    let scale = 2.3 * bands.strength.powf(0.85) * ratio * factor;
++    for_rows(&mut acc.data, w, |y, row| {
++        for (x, a) in row.iter_mut().enumerate() {
++            let i = y * w + x;
++            let d = fine.data.get(i).copied().unwrap_or(0.0) - coarse.data.get(i).copied().unwrap_or(0.0);
++            let t = grid.at(x, y) * scale;
++            let gain = if t <= 1e-9 { 1.0 } else { smooth_gain(d.abs() / t) };
++            *a += d * gain;
++        }
++    });
++}
++
++/// 0 for a coefficient below the threshold (`r` = |coefficient| / threshold ≤ 1), 1 from twice the
++/// threshold, a smooth step between.
++fn smooth_gain(r: f32) -> f32 {
++    let t = (r - 1.0).clamp(0.0, 1.0);
++    t * t * (3.0 - 2.0 * t)
++}
++
++/// Cleans a plane: the sum of its shrunk detail bands and its coarsest residual.
++///
++/// With `unbias` the mean level that the removed noise took with it is put back. A picture's noise is
++/// additive in the linear data, so in the logarithm it pulls the average down by half its variance;
++/// taking the noise out would darken the picture (the shadows most) unless that half variance of what
++/// was removed is added again. The variance is the measured noise level of the finest band, scaled by
++/// the strength.
++fn clean_plane(p: &Plane, bands: &Bands, unbias: bool) -> Plane {
++    let (w, h) = (p.width, p.height);
++    if w < MIN_SIDE || h < MIN_SIDE || bands.strength <= 0.0 || bands.levels == 0 {
++        return p.clone();
++    }
++    // non-finite samples count as zero
++    let mut cur = Plane { width: w, height: h, data: p.data.iter().map(|v| if v.is_finite() { *v } else { 0.0 }).collect() };
++    let mut next = atrous(&cur, 1);
++    let grid = noise_grid(&cur, &next);
++    let mut acc = Plane::new(w, h);
++    for level in 0..bands.levels {
++        if level > 0 {
++            next = atrous(&cur, 1 << level);
++        }
++        shrink_into(&cur, &next, &mut acc, &grid, level, bands);
++        cur = next;
++        next = Plane::new(0, 0);
++    }
++    // the coarsest residual plus the shrunk bands
++    for (a, c) in acc.data.iter_mut().zip(&cur.data) {
++        *a += *c;
++    }
++    if unbias {
++        let removed = bands.strength.clamp(0.0, 1.0) * 0.9;
++        for_rows(&mut acc.data, w, |y, row| {
++            for (x, a) in row.iter_mut().enumerate() {
++                // level 0 holds 0.889 of the input noise; half the variance, in the log2 domain
++                let sigma = grid.at(x, y) / 0.889;
++                *a += (0.5 * std::f32::consts::LN_2 * sigma * sigma * removed).min(0.5);
++            }
++        });
++    }
++    acc
++}
++
++/// Luminance noise reduction of an image: its log luminance is cleaned and the colours follow.
++///
++/// `strength`, `detail` (keep fine detail) and `contrast` (keep coarse contrast) are 0..1.
++pub fn denoise_luminance(img: &mut Rgb32f, strength: f32, detail: f32, contrast: f32) {
++    let (w, h) = (img.width, img.height);
++    if w < MIN_SIDE || h < MIN_SIDE || strength <= 0.0 {
++        return;
++    }
++    let log = img.map(crate::local::log_lum);
++    // fine bands lose their threshold with Detail, coarse bands with Contrast
++    let fine = 1.2 - 0.7 * detail.clamp(0.0, 1.0);
++    let coarse = 1.0 - 0.7 * contrast.clamp(0.0, 1.0);
++    let bands = Bands { strength: strength.clamp(0.0, 1.0), levels: 4, factors: [fine, fine, coarse, coarse * 0.8, coarse * 0.6, coarse * 0.5] };
++    let cleaned = clean_plane(&log, &bands, true);
++    for_rows(&mut img.data, w, |y, row| {
++        for (x, p) in row.iter_mut().enumerate() {
++            let i = y * w + x;
++            let delta = cleaned.data.get(i).copied().unwrap_or(0.0) - log.data.get(i).copied().unwrap_or(0.0);
++            if delta.is_finite() {
++                let gain = delta.exp2();
++                *p = p.map(|v| v * gain);
++            }
++        }
++    });
++}
++
++/// Colour noise reduction of an image: the logarithm of the chromaticity (`rgb / Y`) is cleaned with
++/// more levels than luminance, and each pixel keeps its luminance.
++///
++/// `strength`, `detail` (keep small colour edges) and `smoothness` (thresholds the coarse bands more) are 0..1.
++pub fn denoise_chroma(img: &mut Rgb32f, strength: f32, detail: f32, smoothness: f32) {
++    let (w, h) = (img.width, img.height);
++    if w < MIN_SIDE || h < MIN_SIDE || strength <= 0.0 {
++        return;
++    }
++    // chromaticity in the log domain, with a small offset so that near-black channels do not run away
++    const EPS: f32 = 1e-4;
++    let luma: Vec<f32> = img.data.iter().map(|c| luminance_2020(*c).max(0.0)).collect();
++    let plane = |channel: usize| Plane {
++        width: w,
++        height: h,
++        data: img
++            .data
++            .iter()
++            .zip(&luma)
++            .map(|(c, y)| {
++                let v = c.get(channel).copied().unwrap_or(0.0);
++                if v.is_finite() { ((v.max(0.0) + EPS) / (y + EPS)).ln() } else { 0.0 }
++            })
++            .collect(),
++    };
++    let fine = 1.3 - 0.8 * detail.clamp(0.0, 1.0);
++    let coarse = 1.0 + 0.8 * smoothness.clamp(0.0, 1.0);
++    let bands = Bands { strength: strength.clamp(0.0, 1.0), levels: 5, factors: [fine, fine, coarse, coarse, coarse, coarse] };
++    let cleaned = [clean_plane(&plane(0), &bands, false), clean_plane(&plane(1), &bands, false), clean_plane(&plane(2), &bands, false)];
++    for_rows(&mut img.data, w, |y, row| {
++        for (x, p) in row.iter_mut().enumerate() {
++            let i = y * w + x;
++            let target = luma.get(i).copied().unwrap_or(0.0);
++            let mut q = [0.0f32; 3];
++            for (k, slot) in q.iter_mut().enumerate() {
++                let ratio = cleaned.get(k).and_then(|c| c.data.get(i)).copied().unwrap_or(0.0).exp();
++                *slot = (ratio * (target + EPS) - EPS).max(0.0);
++            }
++            // rescale so that the pixel keeps its luminance
++            let now = luminance_2020(q);
++            if now > 1e-9 && target.is_finite() {
++                let k = target / now;
++                *p = q.map(|v| v * k);
++            }
++        }
++    });
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// A flat grey picture with a vertical edge and noise of a known level.
++    fn noisy(w: usize, h: usize, level: f32) -> Rgb32f {
++        let mut img = Rgb32f::new(w, h);
++        let mut seed = 12345u32;
++        let mut noise = move || {
++            // a sum of uniform numbers: close enough to Gaussian
++            let mut s = 0.0;
++            for _ in 0..4 {
++                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
++                s += (seed >> 8) as f32 / 16_777_216.0 - 0.5;
++            }
++            s * level * 1.7
++        };
++        for y in 0..h {
++            for x in 0..w {
++                let base = if x < w / 2 { 0.15 } else { 0.45 };
++                let v = (base * (1.0 + noise())).max(1e-4);
++                img.data[y * w + x] = [v, v, v];
++            }
++        }
++        img
++    }
++
++    fn flat_spread(img: &Rgb32f, x0: usize, x1: usize) -> f32 {
++        let vals: Vec<f32> = (0..img.height).flat_map(|y| (x0..x1).map(move |x| (y, x))).map(|(y, x)| img.data[y * img.width + x][1].ln()).collect();
++        let mean = vals.iter().sum::<f32>() / vals.len() as f32;
++        (vals.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / vals.len() as f32).sqrt()
++    }
++
++    #[test]
++    fn flat_areas_lose_noise_and_the_edge_stays() {
++        let mut img = noisy(160, 160, 0.20);
++        let before = flat_spread(&img, 10, 70);
++        denoise_luminance(&mut img, 0.8, 0.5, 0.0);
++        let after = flat_spread(&img, 10, 70);
++        assert!(after < before * 0.5, "noise {before} -> {after}");
++        // the edge between 0.15 and 0.45 is still there
++        let dark = img.data[80 * 160 + 40][1];
++        let light = img.data[80 * 160 + 120][1];
++        assert!(light > dark * 2.0, "edge: {dark} / {light}");
++    }
++
++    #[test]
++    fn zero_strength_and_tiny_pictures_are_left_alone() {
++        let mut img = noisy(64, 64, 0.2);
++        let copy = img.clone();
++        denoise_luminance(&mut img, 0.0, 0.5, 0.0);
++        denoise_chroma(&mut img, 0.0, 0.5, 0.0);
++        assert_eq!(img.data, copy.data);
++        let mut tiny = Rgb32f::filled(3, 3, [0.2, 0.3, 0.4]);
++        denoise_luminance(&mut tiny, 1.0, 0.5, 0.0);
++        denoise_chroma(&mut tiny, 1.0, 0.5, 0.0);
++        assert_eq!(tiny.data[0], [0.2, 0.3, 0.4]);
++    }
++
++    #[test]
++    fn non_finite_samples_do_not_panic_or_spread() {
++        let mut img = noisy(64, 64, 0.1);
++        img.data[100] = [f32::NAN, f32::INFINITY, -1.0];
++        denoise_luminance(&mut img, 1.0, 0.0, 0.0);
++        denoise_chroma(&mut img, 1.0, 0.0, 1.0);
++        let finite = img.data.iter().filter(|p| p.iter().all(|v| v.is_finite())).count();
++        assert!(finite >= img.data.len() - 4, "{finite} of {} finite", img.data.len());
++    }
++}

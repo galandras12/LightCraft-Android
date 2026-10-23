@@ -31,6 +31,45 @@ fn main() {
         let _ = host.app.run("view.detail", json!({}));
         if std::env::var_os("AUTO").is_some() {
             println!("auto: {:?}", host.app.run("develop.auto", json!({})).map(|_| ()));
+            if let Some(d) = host.app.session.develop_of(*id) {
+                println!(
+                    "  exposure {:+.2} contrast {:+.0} highlights {:+.0} shadows {:+.0} whites {:+.0} blacks {:+.0} vibrance {:+.0}",
+                    d.light.exposure, d.light.contrast, d.light.highlights, d.light.shadows, d.light.whites, d.light.blacks, d.color.vibrance
+                );
+            }
+        }
+        // LENS_XML=<lensfun file>: load it, list the lenses and give the photo the first one
+        if let Ok(xml) = std::env::var("LENS_XML") {
+            println!("load: {:?}", host.app.run("optics.loadLensProfiles", json!({"path": xml})));
+            let list = host.app.run("optics.lensProfiles", json!({"filter": "test"}));
+            println!("list: {list:?}");
+            let first = list.ok().and_then(|l| l["lenses"][0]["id"].as_u64());
+            if let Some(lens) = first {
+                println!("set: {:?}", host.app.run("optics.lensProfile", json!({"id": lens})));
+                if let Some(photo) = host.app.session.catalog.photo(*id) {
+                    println!("embedded lens: warp={} vignette={} stages={} id={}", photo.embedded_lens.is_some_and(|l| l.warp.is_some()), photo.embedded_lens.is_some_and(|l| l.vignette.is_some()), photo.embedded_lens.is_some_and(|l| l.stages.iter().any(Option::is_some)), photo.embedded_lens.map_or(0, |l| l.profile_id));
+                    println!("optics: {:?}", photo.develop.optics);
+                }
+                println!("now: {:?}", host.app.run("optics.lensProfiles", json!({"limit": 1})).map(|l| l["current"].clone()));
+            }
+        }
+        // NR=<0..100>: luminance and colour noise reduction at that strength
+        if let Some(nr) = std::env::var("NR").ok().and_then(|v| v.parse::<f64>().ok()) {
+            for control in ["detail.nrLuminance", "detail.nrColor"] {
+                let _ = host.app.run("develop.set", json!({"control": control, "value": nr}));
+            }
+        }
+        // EXPORT=<file.png>: the full-size render, to look at the noise at 100 %
+        if let Ok(path) = std::env::var("EXPORT") {
+            let t = Instant::now();
+            let options = lightcraft_engine::export::ExportOptions::from_json(&json!({"format": "png"}));
+            match lightcraft_engine::export::export_photo(&mut host.app.session, *id, &options, 1) {
+                Ok(out) => {
+                    let _ = std::fs::write(&path, &out.bytes);
+                    println!("exported {path}: {}x{} in {:.1}s", out.width, out.height, t.elapsed().as_secs_f64());
+                }
+                Err(e) => println!("export failed: {e}"),
+            }
         }
         host.settle(Duration::from_secs(60));
         let img = host.snapshot(Duration::from_secs(30));

@@ -14,7 +14,6 @@
 
 use egui::epaint::{Mesh, Vertex};
 use egui::{Color32, FontId, Frame, Id, Margin, Pos2, Rect, RichText, Sense, Stroke, pos2, vec2};
-use lightcraft_raster::Histogram;
 use lightcraft_ui_egui::LightcraftApp;
 use lightcraft_ui_egui::render::Slot;
 use lightcraft_ui_egui::theme::Tokens;

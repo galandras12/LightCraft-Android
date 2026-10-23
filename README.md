@@ -15,10 +15,28 @@ phone and tablet interface modelled on Lightroom for Android.
   field, clouds) split by a diagonal line, black and white on one side and colour on the other, with a large
   button that opens the file browser. A new library starts without sample photos.
 - **Library**: a photo grid with a top bar. Tap a photo to open it.
-- **Edit screen**: the photo on top and a tool bar at the bottom (Auto, Presets, Crop, Edit, Masking,
-  Remove). The Edit tool has the tabs Light, Color, Effects, Detail and Optics with touch-sized sliders.
-  Every slider drag is one undo step. On wide screens (tablet, landscape) the tool sheet moves to a panel
-  on the right.
+- **Edit screen**: the photo on top and a tool bar at the bottom (Presets, Crop, Edit, Masking, Remove).
+  The Edit tool has the tabs Light, Color, Effects, Detail and Optics. On wide screens (tablet, landscape)
+  the tool sheet moves to a panel on the right.
+  - **Light**: an Auto button at the top, which adapts Exposure, Highlights, Whites, Shadows, Blacks, Contrast
+    and Vibrance to the picture (clipping headroom, share of deep shadow, tonal range, colourfulness), plus
+    Reset and a parametric tone curve.
+  - **Color**: a white balance preset list, an automatic white balance button, B&W, temperature, tint,
+    vibrance and saturation.
+  - **Detail**: sharpening and noise reduction. Noise reduction is a wavelet filter that measures the noise
+    of the picture itself and keeps edges and texture.
+  - **Optics**: a lens profile drop-down at the top (None, Automatic, or any lens of the loaded database with
+    a filter) and a button that loads lensfun-format XML profile files; below it the lens correction, manual
+    distortion, vignetting, defringe and chromatic aberration sliders.
+- **Crop sheet**: aspect ratios (free, original, common print and screen ratios), the picture formats of
+  popular social networks (Instagram, TikTok, Facebook, X, YouTube, LinkedIn, Pinterest, Snapchat), rotate,
+  flip, straighten, and a Geometry tab with Upright and the manual transform sliders.
+- **Histogram**: a button in the edit top bar shows a histogram card over the photo. Its chips switch between
+  luminosity, RGB (the three channels over each other, to judge the colour balance), each channel alone and a
+  parade, with clipping markers and the average level of each channel.
+- **Touch behaviour**: a slider moves only when its thumb is dragged (a tap on the track or a scroll that
+  starts on it changes nothing; tap the number to type an exact value). Menus stay open until a tap outside
+  them, long menus scroll, and submenus unfold on a tap.
 - **Add photos**: a built-in file browser for the device storage. Tick photos or import a whole folder.
   Files are referenced where they are; nothing is copied or moved.
 - **Safe areas**: the bars keep clear of the status bar, the navigation bar and display cut-outs.
@@ -47,20 +65,31 @@ first) to get the empty library and the welcome screen.
 
 ```
 app/src/lib.rs        crate root
-app/src/mobile.rs     the phone / tablet layout: library, edit screen, tool bar, file browser
+app/src/mobile.rs     the phone / tablet layout: library, edit screen, tool bar, file browser, lens profile chooser
+app/src/crop.rs       the Crop sheet
+app/src/histogram.rs  the histogram card
 app/src/welcome.rs    the welcome screen and its generated picture
 app/src/android.rs    the NativeActivity entry point and the JNI calls (insets, file access)
 app/examples/         desktop tools: preview (UI snapshots), cr3check and cr3probe (raw file checks)
-patches/              the small patch applied to the upstream sources
+patches/              the patches applied to the upstream sources (see below)
 scripts/              fetch-upstream.sh and build-apk.sh
 android/              AndroidManifest.xml and the launcher icon resources
 Debug/                the test APKs and the debug key
 third_party/          the patched upstream checkout (created by the scripts, not committed)
 ```
 
-The upstream crates are used as they are, except for a small patch (`patches/0001-mobile-layout-hook.patch`)
-that lets a host replace the desktop layout with its own. The phone layout in `app/src/mobile.rs` reuses
-upstream widgets: the photo grid, the loupe, the slider row and the preset, crop, masking and remove panels.
+The upstream crates are used as they are, except for the patches in `patches/`:
+
+| Patch | What it does |
+|---|---|
+| `0001-mobile-layout-hook` | lets a host replace the desktop layout with its own; makes two upstream helpers public |
+| `0002-touch-friendly-widgets` | scrolling context menus that close on a tap outside, tap-to-unfold submenus, sliders that only the thumb moves |
+| `0003-light-and-noise-reduction` | adaptive Auto light and the wavelet noise reduction (GPU render falls back to the CPU filter) |
+| `0004-lens-profiles` | a reloadable lens database, the lens profile commands, the chosen profile in the render |
+
+The phone layout in `app/src/mobile.rs` reuses upstream widgets: the photo grid, the loupe, the slider row and
+the preset, masking and remove panels. After editing files in `third_party/lightcraft`, run
+`./scripts/save-patches.sh` to write the changes back into the patches (the build resets that folder).
 
 ### Build requirements
 
@@ -99,7 +128,8 @@ Run `./scripts/fetch-upstream.sh` once before the first desktop build.
 
 - Not yet tried on a physical device; memory use with 45 to 60 megapixel raw files is unknown.
 - No pinch-to-zoom or swipe-between-photos tuning for touch; the upstream loupe handles zoom and pan.
-- The crop, masking, remove and presets panels are the upstream desktop panels shown in a sheet.
+- The masking, remove and presets panels are the upstream desktop panels shown in a sheet.
+- The app ships no lens profiles; load a lensfun database (CC-BY-SA, <https://github.com/lensfun/lensfun>, folder `data/db`).
 - Export and sharing are not wired to the Android share sheet yet.
 - The interface is English only.
 

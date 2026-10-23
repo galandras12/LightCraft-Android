@@ -14,6 +14,8 @@ if [ "$(git -C "$DIR" rev-parse HEAD 2>/dev/null || true)" != "$REV" ]; then
   git -C "$DIR" fetch -q --depth 1 origin "$REV"
   git -C "$DIR" checkout -q -f "$REV"
 fi
-git -C "$DIR" checkout -q -- .
+# back to the pinned revision, dropping earlier edits and the files earlier patches added
+git -C "$DIR" reset -q --hard "$REV"
+git -C "$DIR" clean -fdq
 for p in patches/*.patch; do git -C "$DIR" apply "../../$p"; done
 echo "upstream $REV patched in $DIR"

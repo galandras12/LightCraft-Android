@@ -1,0 +1,395 @@
+Android port: lens profiles that can be loaded and chosen.
+
+* The lens database (engine/src/lens_profiles.rs) is reloadable. Profile files (lensfun XML) loaded by the
+  user are copied into `<settings>/lens-profiles` and read together with LIGHTCRAFT_LENSFUN_DIR.
+* New commands (engine/src/cmd/lens.rs): `optics.lensProfiles` (list, filter, suggested and current),
+  `optics.loadLensProfiles` and `optics.lensProfile` (choose a profile, "auto" or "none" for the active photo).
+* `EmbeddedLens::profile_id` (develop/src/settings.rs) says which database profile a correction came from.
+  A catalogue lens with a profile id wins over the lens the decoder found, and is part of the render key
+  (engine/src/media.rs), so choosing a profile changes the render.
+diff --git a/crates/develop/src/settings.rs b/crates/develop/src/settings.rs
+index a40f094..009139b 100644
+--- a/crates/develop/src/settings.rs
++++ b/crates/develop/src/settings.rs
+@@ -701,6 +701,9 @@ pub struct EmbeddedLens {
+     /// A DNG 1.6 `WarpRectilinear2` chain (up to [`WARP_STAGES`] stages, in `OpcodeList3` order; each stage warps
+     /// the result of the one before it). When any is set, `warp` is `None`: the chain holds every warp opcode.
+     pub stages: [Option<EmbeddedWarpStage>; WARP_STAGES],
++    /// Android port: which lens-database profile this correction came from (`lightcraft_engine::lens_profiles::profile_id`),
++    /// 0 for a correction the file carries itself or none. Lets the UI show the chosen profile.
++    pub profile_id: u64,
+ }
+ 
+ /// Most warp stages an [`EmbeddedLens`] chain keeps.
+diff --git a/crates/engine/src/cmd/lens.rs b/crates/engine/src/cmd/lens.rs
+new file mode 100644
+index 0000000..a7c22be
+--- /dev/null
++++ b/crates/engine/src/cmd/lens.rs
+@@ -0,0 +1,115 @@
++//! Lens profile commands (Android port): list the lenses of the loaded database, load profile files and choose
++//! the profile of the active photo.
++//!
++//! The database is in the lensfun XML format ([`crate::lens_profiles`]); the app ships none, the user loads one.
++
++use lightcraft_catalog::Op;
++use lightcraft_develop::EmbeddedLens;
++use serde_json::{Value, json};
++
++use super::{CommandSpec, always, bad, cmd, has_active, ok};
++use crate::lens_profiles as lens_db;
++use crate::{Result, Session};
++
++pub fn specs() -> Vec<CommandSpec> {
++    vec![
++        cmd!(
++            "optics.lensProfiles",
++            "List Lens Profiles",
++            [],
++            None,
++            "{filter?: words the maker or model must contain, limit?: number (default 60; 0 lists no lenses, only the suggested and current ones)} -> {loaded: bool, total: number of lenses, lenses: [{id, maker, model, crop_factor}], suggested: the profile that matches the active photo's lens or null, current: the active photo's chosen profile or null}",
++            always,
++            |s, p| {
++                let Some(db) = lens_db::database() else {
++                    return Ok(json!({"loaded": false, "total": 0, "lenses": [], "suggested": null, "current": null}));
++                };
++                let filter = p.get("filter").and_then(Value::as_str).unwrap_or_default();
++                let limit = p.get("limit").and_then(Value::as_u64).map_or(60, |l| l.min(500) as usize);
++                let photo = s.active().and_then(|id| s.catalog.photo(id));
++                let entry = |profile: &lightcraft_lensdb::Profile| {
++                    json!({"id": lens_db::profile_id(profile), "maker": profile.maker, "model": profile.models.first(), "crop_factor": profile.crop_factor})
++                };
++                // the profile that matches the photo's EXIF lens name
++                let suggested = photo.and_then(|ph| {
++                    let camera = lens_db::camera_named(&db, &ph.meta.camera);
++                    db.find_lens(None, &ph.meta.lens, camera).map(entry)
++                });
++                let current = photo.and_then(|ph| ph.embedded_lens).filter(|l| l.profile_id != 0).and_then(|l| lens_db::find_by_id(&db, l.profile_id).map(entry));
++                Ok(json!({
++                    "loaded": true,
++                    "total": db.lenses.len(),
++                    "lenses": if limit == 0 { Vec::new() } else { lens_db::entries(&db, filter, limit) },
++                    "suggested": suggested,
++                    "current": current,
++                }))
++            }
++        ),
++        cmd!(
++            "optics.loadLensProfiles",
++            "Load Lens Profiles",
++            [],
++            None,
++            "{path: a lensfun-format XML file or a folder of them} -> {lenses: number found} - the files are copied into the settings folder",
++            always,
++            |_s, p| {
++                let path = p.get("path").and_then(Value::as_str).ok_or_else(|| bad("optics.loadLensProfiles", "missing `path`"))?;
++                let lenses = lens_db::import(std::path::Path::new(path)).map_err(|e| bad("optics.loadLensProfiles", e))?;
++                Ok(json!({"lenses": lenses}))
++            }
++        ),
++        cmd!(
++            "optics.lensProfile",
++            "Set Lens Profile",
++            [],
++            None,
++            "{id: a lens id from optics.lensProfiles, or \"auto\" (the profile that matches the photo's lens) or \"none\", focal?: mm, used when the photo records none (else the lens's first calibrated focal length)} - applies the profile's distortion, vignetting and chromatic aberration correction to the active photo",
++            has_active,
++            |s, p| set_profile(s, p.get("id").cloned().unwrap_or_else(|| json!("auto")), p.get("focal").and_then(Value::as_f64))
++        ),
++    ]
++}
++
++/// Gives the active photo the lens correction `choice` names and switches the lens corrections on (or off for none).
++fn set_profile(s: &mut Session, choice: Value, p_focal: Option<f64>) -> Result<Value> {
++    const C: &str = "optics.lensProfile";
++    let id = s.active().ok_or_else(|| bad(C, "no active photo"))?;
++    let photo = s.catalog.photo(id).ok_or_else(|| bad(C, "no such photo"))?;
++    let (w, h) = (f64::from(photo.width), f64::from(photo.height));
++    let (focal, aperture) = (photo.meta.focal_mm.map(f64::from), photo.meta.aperture.map(f64::from));
++    let (camera, lens_name) = (photo.meta.camera.clone(), photo.meta.lens.clone());
++
++    let correction: Option<EmbeddedLens> = match &choice {
++        Value::String(c) if c == "none" => None,
++        _ => {
++            let db = lens_db::database().ok_or_else(|| bad(C, "no lens profiles are loaded"))?;
++            let profile = match &choice {
++                Value::String(c) if c == "auto" => {
++                    db.find_lens(None, &lens_name, lens_db::camera_named(&db, &camera)).ok_or_else(|| bad(C, "no profile matches this photo's lens"))?
++                }
++                Value::Number(n) => n.as_u64().and_then(|n| lens_db::find_by_id(&db, n)).ok_or_else(|| bad(C, "no such lens profile"))?,
++                _ => return Err(bad(C, "id is a lens id, \"auto\" or \"none\"")),
++            };
++            // the focal length the photo records; else the one asked for; else the lens's first calibrated focal length
++            let asked = p_focal.filter(|f| f.is_finite() && *f > 0.0);
++            let focal = focal
++                .filter(|f| f.is_finite() && *f > 0.0)
++                .or(asked)
++                .or_else(|| profile.distortion.first().map(|d| d.0).or_else(|| profile.vignetting.first().map(|v| v.focal)))
++                .ok_or_else(|| bad(C, "the photo records no focal length and the profile has none to fall back on"))?;
++            let corr = lens_db::correction_for(&db, profile, &camera, focal, aperture, w, h)
++                .ok_or_else(|| bad(C, "the profile has no correction for this focal length"))?;
++            Some(corr)
++        }
++    };
++    let on = correction.is_some();
++    s.commit("Lens Profile", Op::SetEmbeddedLens { id, lens: correction.map(Box::new) })?;
++    // switch the corrections on (the amounts stay as they are), or off with "none"
++    let mut d = (*s.develop_of(id).unwrap_or_default()).clone();
++    if d.optics.lens_profile != on {
++        d.optics.lens_profile = on;
++        s.set_develop(id, d, "Lens Profile")?;
++    }
++    s.media.forget(id);
++    ok()
++}
+diff --git a/crates/engine/src/cmd/mod.rs b/crates/engine/src/cmd/mod.rs
+index 9b8dc3d..8331cef 100644
+--- a/crates/engine/src/cmd/mod.rs
++++ b/crates/engine/src/cmd/mod.rs
+@@ -13,6 +13,7 @@ mod cull;
+ pub mod curves;
+ pub(crate) mod denoise;
+ mod develop;
++mod lens;
+ mod edit;
+ mod export;
+ pub(crate) mod face_detect;
+@@ -144,6 +145,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
+         v.extend(edit::specs());
+         v.extend(library::specs());
+         v.extend(develop::specs());
++        v.extend(lens::specs());
+         v.extend(color::specs());
+         v.extend(curves::specs());
+         v.extend(masks::specs());
+diff --git a/crates/engine/src/lens_profiles.rs b/crates/engine/src/lens_profiles.rs
+index 6e7f281..78bf127 100644
+--- a/crates/engine/src/lens_profiles.rs
++++ b/crates/engine/src/lens_profiles.rs
+@@ -5,34 +5,148 @@
+ //! directory in `LIGHTCRAFT_LENSFUN_DIR` (e.g. lensfun's `data/db`, CC-BY-SA, which is never bundled with the app).
+ //! The profile is converted to the same [`lightcraft_develop::EmbeddedLens`] form, so "Enable Profile Corrections", its
+ //! amount sliders, the GPU path and DNG export treat both alike. Without the variable nothing changes.
+-use std::path::PathBuf;
+-use std::sync::OnceLock;
++use std::path::{Path, PathBuf};
++use std::sync::{Arc, Once, RwLock};
+ 
+ use lightcraft_develop::EmbeddedLens;
+-use lightcraft_lensdb::{LensDb, Shot};
++use lightcraft_lensdb::{LensDb, Profile, Shot};
+ 
+ /// The environment variable naming the lens database directory.
+ pub const ENV: &str = "LIGHTCRAFT_LENSFUN_DIR";
+ 
+-/// The configured database, read once per process; `None` when none is configured or it holds no lenses.
+-pub fn database() -> Option<&'static LensDb> {
+-    static DB: OnceLock<Option<LensDb>> = OnceLock::new();
+-    DB.get_or_init(|| {
+-        let dir = PathBuf::from(std::env::var_os(ENV)?);
++/// The database in use, behind a lock because Android port users load profile files while the app runs.
++static DB: RwLock<Option<Arc<LensDb>>> = RwLock::new(None);
++static INIT: Once = Once::new();
++
++/// The folder the profile files the user loaded are kept in: `<settings>/lens-profiles`.
++pub fn store_dir() -> Option<PathBuf> {
++    crate::config::config_dir().map(|d| d.join("lens-profiles"))
++}
++
++/// The configured database, read on first use; `None` when none is configured or it holds no lenses.
++/// It is made of the directory in [`ENV`] and every file in [`store_dir`] (the files loaded with [`import`]).
++pub fn database() -> Option<Arc<LensDb>> {
++    INIT.call_once(reload);
++    DB.read().ok().and_then(|g| g.clone())
++}
++
++/// Reads the database again from [`ENV`] and [`store_dir`].
++pub fn reload() {
++    let mut db = LensDb::default();
++    let dirs = std::env::var_os(ENV).map(PathBuf::from).into_iter().chain(store_dir());
++    for dir in dirs {
++        if !dir.is_dir() {
++            continue;
++        }
+         match LensDb::load_dir(&dir) {
+-            Ok((db, errors)) => {
++            Ok((part, errors)) => {
+                 for (file, e) in errors {
+                     log::warn!("lens database: skipped {file}: {e}");
+                 }
+-                (!db.lenses.is_empty()).then_some(db)
+-            }
+-            Err(e) => {
+-                log::warn!("{e}");
+-                None
++                db.extend(part);
+             }
++            Err(e) => log::warn!("{e}"),
+         }
+-    })
+-    .as_ref()
++    }
++    if let Ok(mut guard) = DB.write() {
++        *guard = (!db.lenses.is_empty()).then(|| Arc::new(db));
++    }
++}
++
++/// Loads lens profiles from `path`: one lensfun-format XML file, or a folder of them. The files are copied to
++/// [`store_dir`], so they stay available when the original goes away, and the database is read again. Returns
++/// the number of lenses found in the files.
++pub fn import(path: &Path) -> Result<usize, String> {
++    let files: Vec<PathBuf> = if path.is_dir() {
++        let mut found: Vec<PathBuf> = std::fs::read_dir(path)
++            .map_err(|e| format!("{}: {e}", path.display()))?
++            .flatten()
++            .map(|e| e.path())
++            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml")))
++            .collect();
++        found.sort();
++        found
++    } else {
++        vec![path.to_path_buf()]
++    };
++    if files.is_empty() {
++        return Err("no XML files found".into());
++    }
++    let store = store_dir().ok_or("there is no settings folder to keep the profiles in")?;
++    std::fs::create_dir_all(&store).map_err(|e| format!("{}: {e}", store.display()))?;
++    let mut lenses = 0;
++    for file in files {
++        let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
++        // a file that is not a lens database is refused before anything is copied
++        let db = LensDb::parse(&text).map_err(|e| format!("{}: {e}", file.display()))?;
++        lenses += db.lenses.len();
++        let name = file.file_name().map(|n| n.to_os_string()).ok_or("the file has no name")?;
++        std::fs::write(store.join(name), text).map_err(|e| format!("{}: {e}", store.display()))?;
++    }
++    reload();
++    Ok(lenses)
++}
++
++/// A stable id of a database lens (the same on every start): a hash of its maker and first model name.
++pub fn profile_id(p: &Profile) -> u64 {
++    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
++    for byte in p.maker.bytes().chain(std::iter::once(0)).chain(p.models.first().map(|m| m.bytes()).into_iter().flatten()) {
++        h ^= u64::from(byte);
++        h = h.wrapping_mul(0x0100_0000_01b3);
++    }
++    // 0 means "no profile"
++    h.max(1)
++}
++
++/// The database lens with this id.
++pub fn find_by_id(db: &LensDb, id: u64) -> Option<&Profile> {
++    db.lenses.iter().find(|p| profile_id(p) == id)
++}
++
++/// A lens of the database, as the UI lists it.
++#[derive(Clone, Debug, PartialEq, serde::Serialize)]
++pub struct Entry {
++    pub id: u64,
++    pub maker: String,
++    pub model: String,
++    pub crop_factor: f64,
++}
++
++/// The lenses whose maker or model contains every word of `filter` (case-insensitive), at most `limit`,
++/// sorted by maker and model.
++pub fn entries(db: &LensDb, filter: &str, limit: usize) -> Vec<Entry> {
++    let words: Vec<String> = filter.split_whitespace().map(str::to_lowercase).collect();
++    let mut out: Vec<Entry> = db
++        .lenses
++        .iter()
++        .filter(|p| {
++            let text = format!("{} {}", p.maker, p.models.join(" ")).to_lowercase();
++            words.iter().all(|w| text.contains(w))
++        })
++        .map(|p| Entry { id: profile_id(p), maker: p.maker.clone(), model: p.models.first().cloned().unwrap_or_default(), crop_factor: p.crop_factor })
++        .collect();
++    out.sort_by(|a, b| (a.maker.to_lowercase(), a.model.to_lowercase()).cmp(&(b.maker.to_lowercase(), b.model.to_lowercase())));
++    out.truncate(limit);
++    out
++}
++
++/// The database camera named by `camera` (the make and model as one string, as the catalogue keeps it).
++pub fn camera_named<'a>(db: &'a LensDb, camera: &str) -> Option<&'a lightcraft_lensdb::Camera> {
++    let camera = camera.to_lowercase();
++    if camera.is_empty() {
++        return None;
++    }
++    db.cameras.iter().find(|c| camera.contains(&format!("{} {}", c.maker, c.model).to_lowercase()))
++}
++
++/// The correction of `profile` for a photo `w × h` pixels with the given focal length and aperture. The camera's crop
++/// factor is looked up by `camera` (the make and model as one string) and is the profile's own when unknown.
++pub fn correction_for(db: &LensDb, profile: &Profile, camera: &str, focal: f64, aperture: Option<f64>, w: f64, h: f64) -> Option<EmbeddedLens> {
++    let cam = camera_named(db, camera);
++    let shot = Shot { focal, aperture, distance: None, crop_factor: cam.map(|c| c.crop_factor), width: w, height: h };
++    let mut corr = profile.correction(&shot)?;
++    corr.profile_id = profile_id(profile);
++    Some(corr)
+ }
+ 
+ /// The database profile for a photo with metadata `m`, for its `w × h` (unoriented, default-cropped) image,
+@@ -51,7 +165,8 @@ pub fn lookup(db: &LensDb, m: &lightcraft_meta::Metadata, w: f64, h: f64, orient
+     };
+     let crop = frame_crop_factor(camera.map(|c| c.crop_factor), focal, m.focal_length_35mm);
+     let shot = Shot { focal, aperture: m.f_number, distance: None, crop_factor: crop, width: w, height: h };
+-    let corr = lens.correction(&shot)?;
++    let mut corr = lens.correction(&shot)?;
++    corr.profile_id = profile_id(lens);
+     Some(lightcraft_pipeline::optics::reorient_lens(&corr, orientation, w, h))
+ }
+ 
+@@ -73,7 +188,7 @@ pub fn for_raw(raw: &lightcraft_raw::RawInfo, meta: impl FnOnce() -> lightcraft_
+     crate::files::embedded_lens(raw).or_else(|| {
+         let db = database()?;
+         let (w, h) = raw.developed_size();
+-        lookup(db, &meta(), w as f64, h as f64, raw.orientation)
++        lookup(&db, &meta(), w as f64, h as f64, raw.orientation)
+     })
+ }
+ 
+diff --git a/crates/engine/src/media.rs b/crates/engine/src/media.rs
+index 292a9fb..196a584 100644
+--- a/crates/engine/src/media.rs
++++ b/crates/engine/src/media.rs
+@@ -240,7 +240,13 @@ impl DecodedSource {
+     /// decoder only sees the level it decoded.
+     pub fn info_or(&self, header: SourceInfo) -> SourceInfo {
+         match &self.info {
+-            Some(info) => SourceInfo { native_long: info.native_long.or(header.native_long), ..info.clone() },
++            // Android port: a lens profile chosen from the lens database (its correction carries a profile id) is
++            // the catalogue's; it wins over the lens the decoder found when the file was read
++            Some(info) => SourceInfo {
++                native_long: info.native_long.or(header.native_long),
++                lens: header.lens.filter(|l| l.profile_id != 0).or(info.lens),
++                ..info.clone()
++            },
+             None => SourceInfo { camera_tone: self.camera_tone.or(header.camera_tone), ..header },
+         }
+     }
+@@ -1293,7 +1299,9 @@ impl crate::Session {
+         let content = source_key.0 as u64;
+         // Temporary "before" settings must not replace the photo's cached develop hash.
+         let settings_hash = if before { settings.hash64() } else { self.media.settings_hashes.get(id, &settings) };
+-        let salt = self.media.denoise_salt(id, &settings);
++        // Android port: the chosen lens profile is part of the key (the correction is in the catalogue, not in the settings)
++        let lens_salt = p.embedded_lens.map_or(0, |l| l.profile_id.rotate_left(29));
++        let salt = self.media.denoise_salt(id, &settings) ^ lens_salt;
+         let key = settings_hash
+             ^ ((max_w as u64) << 40)
+             ^ ((max_h as u64) << 20)
+diff --git a/crates/pipeline/src/optics.rs b/crates/pipeline/src/optics.rs
+index 31e8d13..e8ab139 100644
+--- a/crates/pipeline/src/optics.rs
++++ b/crates/pipeline/src/optics.rs
+@@ -375,7 +375,7 @@ pub fn reorient_lens(lens: &EmbeddedLens, o: Orientation, w: f64, h: f64) -> Emb
+             EmbeddedWarpStage { planes, center: map_pt(st.center), radius: st.radius * long_ratio, reciprocal: st.reciprocal }
+         })
+     });
+-    EmbeddedLens { warp, vignette, stages }
++    EmbeddedLens { warp, vignette, stages, profile_id: lens.profile_id }
+ }
+ 
+ // ------------------------------------------------------------------------------------------ lateral CA

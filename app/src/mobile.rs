@@ -307,7 +307,7 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
                     egui::Popup::menu(&more).show(|ui| grid_menu(app, ui));
                     // "+" opens the file browser to add photos.
                     if icon_btn(ui, "m_import", Icon::Plus, false, true, "Add photos").clicked() {
-                        st.browser = Some(Browser::open(&start_dir()));
+                        st.browser = Some(Browser::open(&start_dir(), Purpose::Photos));
                     }
                 });
             }
@@ -396,7 +396,7 @@ fn grid_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, inset
         // The welcome screen fills the whole body.
         let tapped = egui::CentralPanel::default().frame(Frame::NONE.fill(t.grid_bg)).show(ui, welcome::show).inner;
         if tapped {
-            st.browser = Some(Browser::open(&start_dir()));
+            st.browser = Some(Browser::open(&start_dir(), Purpose::Photos));
         }
         return;
     }
@@ -542,7 +542,7 @@ fn tab_row(ui: &mut egui::Ui, st: &mut State) {
 fn sheet(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State) {
     match st.tool {
         Tool::None => {}
-        Tool::Edit => edit_sliders(app, ui, st.tab),
+        Tool::Edit => edit_sliders(app, ui, st),
         Tool::Presets => panels::presets::show(app, ui),
         Tool::Crop => crate::crop::sheet(app, ui, &mut st.crop),
         Tool::Masking | Tool::Remove => panels::right::show(app, ui),
@@ -629,7 +629,8 @@ fn rel_to_k(r: f64) -> f64 {
 }
 
 /// The sliders of the chosen Edit tab for the active photo. A slider drag is one undo step.
-fn edit_sliders(app: &mut LightcraftApp, ui: &mut egui::Ui, tab: Tab) {
+fn edit_sliders(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State) {
+    let tab = st.tab;
     let t = Tokens::get(ui.ctx());
     let Some(id) = app.session.active() else {
         ui.add_space(24.0);
@@ -708,9 +709,101 @@ fn edit_sliders(app: &mut LightcraftApp, ui: &mut egui::Ui, tab: Tab) {
             }
             Tab::Effects => list(app, ui, &d, EFFECTS),
             Tab::Detail => list(app, ui, &d, DETAIL),
-            Tab::Optics => list(app, ui, &d, OPTICS),
+            Tab::Optics => {
+                lens_profile_ui(app, ui, st);
+                list(app, ui, &d, OPTICS);
+            }
         }
         ui.add_space(12.0);
+    });
+}
+
+/// The lens profile chooser at the top of the Optics tab: a drop-down list of the lenses of the loaded database
+/// (with a filter, the lens that matches the photo first, Automatic and None) and a button that loads profile files.
+fn lens_profile_ui(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State) {
+    let t = Tokens::get(ui.ctx());
+    // what is loaded, the lens that matches the photo and the photo's current choice (no list: it is read below, open)
+    let info = app.run("optics.lensProfiles", json!({"limit": 0})).unwrap_or(serde_json::Value::Null);
+    let loaded = info["loaded"].as_bool().unwrap_or(false);
+    let name = |v: &serde_json::Value| v["model"].as_str().unwrap_or_default().to_string();
+    let current = info["current"].as_object().map(|_| name(&info["current"]));
+    let suggested = info["suggested"].as_object().map(|_| name(&info["suggested"]));
+    let has_lens = app.session.active().and_then(|id| app.session.catalog.photo(id)).is_some_and(|p| p.embedded_lens.is_some());
+    let label = match (&current, has_lens) {
+        (Some(n), _) => n.clone(),
+        (None, true) => "Profile from the file".to_string(),
+        (None, false) => "None".to_string(),
+    };
+
+    ui.horizontal(|ui| {
+        ui.add_space(24.0);
+        ui.label(RichText::new("Lens profile").size(13.0).color(t.text_dim));
+    });
+    ui.add_space(4.0);
+    let mut chosen: Option<serde_json::Value> = None;
+    ui.horizontal(|ui| {
+        ui.add_space(24.0);
+        // The drop-down: it stays open while the filter is typed and closes after a choice or a tap outside.
+        egui::ComboBox::from_id_salt("m_lens_profile")
+            .selected_text(label)
+            .width(ui.available_width() - 48.0)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show_ui(ui, |ui| {
+                ui.set_min_width(260.0);
+                if !loaded {
+                    ui.label(RichText::new("No lens profiles loaded yet.").color(t.text_dim));
+                    ui.label(RichText::new("Load a lensfun database (XML files) below.").size(12.0).color(t.text_dim));
+                    return;
+                }
+                // The filter: every word must be in the maker or the model.
+                let filter_id = Id::new("m_lens_filter");
+                let mut filter: String = ui.data(|d| d.get_temp(filter_id)).unwrap_or_default();
+                ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Filter lenses...").desired_width(f32::INFINITY));
+                ui.data_mut(|d| d.insert_temp(filter_id, filter.clone()));
+                if ui.selectable_label(current.is_none() && !has_lens, "None").clicked() {
+                    chosen = Some(json!("none"));
+                }
+                if let Some(model) = &suggested {
+                    if ui.selectable_label(false, format!("Automatic: {model}")).clicked() {
+                        chosen = Some(json!("auto"));
+                    }
+                }
+                ui.separator();
+                let list = app.run("optics.lensProfiles", json!({"filter": filter, "limit": 80})).unwrap_or(serde_json::Value::Null);
+                let lenses = list["lenses"].as_array().cloned().unwrap_or_default();
+                egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                    for lens in &lenses {
+                        let model = lens["model"].as_str().unwrap_or_default();
+                        let maker = lens["maker"].as_str().unwrap_or_default();
+                        let text = if model.to_lowercase().contains(&maker.to_lowercase()) || maker.is_empty() { model.to_string() } else { format!("{maker} {model}") };
+                        let selected = current.as_deref() == Some(model);
+                        if ui.selectable_label(selected, text).clicked() {
+                            chosen = lens["id"].as_u64().map(|id| json!(id));
+                        }
+                    }
+                    if lenses.is_empty() {
+                        ui.label(RichText::new("No lens matches").color(t.text_dim));
+                    } else if list["total"].as_u64().unwrap_or(0) > lenses.len() as u64 {
+                        ui.label(RichText::new("Type to narrow the list...").size(12.0).color(t.text_dim));
+                    }
+                });
+            });
+    });
+    if let Some(choice) = chosen {
+        if let Err(e) = app.run("optics.lensProfile", json!({"id": choice})) {
+            app.toast(ui.ctx(), e);
+        }
+    }
+    ui.add_space(6.0);
+    // Loading profile files: opens the file browser on the XML files.
+    tab_actions(ui, |ui| {
+        if widgets::text_button(ui, "m_lens_load", "Load profiles...", false).clicked() {
+            st.browser = Some(Browser::open(&download_dir(), Purpose::LensProfiles));
+        }
+        if loaded {
+            let total = info["total"].as_u64().unwrap_or(0);
+            ui.label(RichText::new(format!("{total} lenses loaded")).size(12.0).color(t.text_dim));
+        }
     });
 }
 
@@ -742,12 +835,48 @@ struct Entry {
     size: u64,
 }
 
+/// What the file browser is for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    /// Adding photos to the library.
+    Photos,
+    /// Loading lens profile files (lensfun XML).
+    LensProfiles,
+}
+
+impl Purpose {
+    /// The title of the browser screen.
+    fn title(self) -> &'static str {
+        match self {
+            Purpose::Photos => "Add photos",
+            Purpose::LensProfiles => "Load lens profiles",
+        }
+    }
+
+    /// Whether a file of this name is listed.
+    fn accepts(self, name: &str) -> bool {
+        match self {
+            Purpose::Photos => is_photo(name),
+            Purpose::LensProfiles => name.to_ascii_lowercase().ends_with(".xml"),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Browser {
+    /// What the chosen files are used for.
+    purpose: Purpose,
     dir: std::path::PathBuf,
     entries: Vec<Entry>,
     selected: std::collections::BTreeSet<std::path::PathBuf>,
     error: Option<String>,
+}
+
+/// Where the browser starts when loading lens profiles: the Download folder when there is one.
+fn download_dir() -> std::path::PathBuf {
+    let root = platform().storage_root.clone();
+    let downloads = root.join("Download");
+    if downloads.is_dir() { downloads } else { root }
 }
 
 /// Where the file browser starts: the camera folder (DCIM) when there is one, else the storage root.
@@ -765,8 +894,8 @@ fn is_photo(name: &str) -> bool {
 
 /// Reading and navigating the folder of the file browser.
 impl Browser {
-    fn open(dir: &std::path::Path) -> Browser {
-        let mut b = Browser { dir: dir.to_path_buf(), entries: vec![], selected: Default::default(), error: None };
+    fn open(dir: &std::path::Path, purpose: Purpose) -> Browser {
+        let mut b = Browser { purpose, dir: dir.to_path_buf(), entries: vec![], selected: Default::default(), error: None };
         b.read();
         b
     }
@@ -782,7 +911,7 @@ impl Browser {
                         continue;
                     }
                     let Ok(meta) = e.metadata() else { continue };
-                    if meta.is_dir() || is_photo(&name) {
+                    if meta.is_dir() || self.purpose.accepts(&name) {
                         self.entries.push(Entry { path: e.path(), name, dir: meta.is_dir(), size: meta.len() });
                     }
                 }
@@ -832,7 +961,7 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
             ui.vertical(|ui| {
                 ui.add_space(8.0);
                 ui.spacing_mut().item_spacing.y = 0.0;
-                ui.label(RichText::new("Add photos").size(13.0).color(t.text_dim));
+                ui.label(RichText::new(b.purpose.title()).size(13.0).color(t.text_dim));
                 let name = b.dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| b.dir.display().to_string());
                 ui.add(egui::Label::new(RichText::new(name).size(16.0).color(t.text)).truncate());
             });
@@ -857,7 +986,11 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
         egui::Panel::bottom("m_b_bottom").exact_size(TOOLBAR_H + insets.bottom).frame(Frame::NONE.fill(t.chrome).stroke(Stroke::new(1.0, t.divider))).show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(16.0);
-                let label = if n > 0 { format!("Import {n} photo{}", if n == 1 { "" } else { "s" }) } else { "Import this folder".to_string() };
+                let (noun, verb) = match b.purpose {
+                    Purpose::Photos => ("photo", "Import"),
+                    Purpose::LensProfiles => ("file", "Load"),
+                };
+                let label = if n > 0 { format!("{verb} {n} {noun}{}", if n == 1 { "" } else { "s" }) } else { format!("{verb} this folder") };
                 let enabled = n > 0 || b.entries.iter().any(|e| !e.dir) || b.entries.iter().any(|e| e.dir);
                 let btn = egui::Button::new(RichText::new(label).size(16.0).color(Color32::WHITE)).fill(t.accent).min_size(vec2(ui.available_width() - 16.0, 44.0));
                 if ui.add_enabled(enabled, btn).clicked() {
@@ -897,7 +1030,7 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
         }
         if b.entries.is_empty() {
             ui.add_space(24.0);
-            ui.vertical_centered(|ui| ui.label(RichText::new("No folders or photos here").color(t.text_dim)));
+            ui.vertical_centered(|ui| ui.label(RichText::new(if b.purpose == Purpose::Photos { "No folders or photos here" } else { "No folders or XML files here" }).color(t.text_dim)));
         }
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
@@ -909,7 +1042,7 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
                     ui.painter().rect_filled(row, 0.0, t.hover);
                 }
                 let icon_rect = egui::Rect::from_center_size(egui::pos2(row.left() + 32.0, row.center().y), vec2(24.0, 24.0));
-                paint(ui.painter(), icon_rect, if e.dir { Icon::Folder } else { Icon::Photos }, t.icon);
+                paint(ui.painter(), icon_rect, if e.dir { Icon::Folder } else if b.purpose == Purpose::Photos { Icon::Photos } else { Icon::Tag }, t.icon);
                 ui.painter().text(
                     egui::pos2(row.left() + 64.0, row.center().y - if e.dir { 0.0 } else { 9.0 }),
                     egui::Align2::LEFT_CENTER,
@@ -942,12 +1075,33 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
         b.go(&dir);
     }
     if let Some(paths) = import {
-        match lightcraft_ui_egui::import::start_paths(app, paths) {
-            Ok(_) => {
-                app.ui.view = ViewMode::PhotoGrid;
-                close = true;
+        match b.purpose {
+            // photos go to the import (the engine lists folders itself)
+            Purpose::Photos => match lightcraft_ui_egui::import::start_paths(app, paths) {
+                Ok(_) => {
+                    app.ui.view = ViewMode::PhotoGrid;
+                    close = true;
+                }
+                Err(e) => app.toast(ui.ctx(), e),
+            },
+            // lens profile files go to the lens database
+            Purpose::LensProfiles => {
+                let mut lenses = 0;
+                let mut failure = None;
+                for path in paths {
+                    match app.run("optics.loadLensProfiles", json!({"path": path})) {
+                        Ok(r) => lenses += r["lenses"].as_u64().unwrap_or(0),
+                        Err(e) => failure = Some(e),
+                    }
+                }
+                match failure {
+                    Some(e) => app.toast(ui.ctx(), e),
+                    None => {
+                        app.toast(ui.ctx(), format!("Loaded {lenses} lens profiles"));
+                        close = true;
+                    }
+                }
             }
-            Err(e) => app.toast(ui.ctx(), e),
         }
     }
     if !close {
@@ -959,6 +1113,6 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
 pub fn open_browser(ctx: &egui::Context, dir: &std::path::Path) {
     let key = Id::new("lightcraft-mobile");
     let mut st: State = ctx.data(|d| d.get_temp(key)).unwrap_or_default();
-    st.browser = Some(Browser::open(dir));
+    st.browser = Some(Browser::open(dir, Purpose::Photos));
     ctx.data_mut(|d| d.insert_temp(key, st));
 }
