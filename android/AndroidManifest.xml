@@ -1,13 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Manifest of the LightCraft debug APK.
+
+  The app is pure native code (Rust) running in Android's NativeActivity, so there is no Java code
+  (android:hasCode="false") and the shared library is named by the "android.app.lib_name" entry.
+  Everything the user sees is drawn by the Rust UI; this file only describes the package.
+-->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="ai.storyteller.lightcraft.android"
     android:versionCode="1"
     android:versionName="0.1.0">
 
+    <!-- Reading photos from the device storage (the Add photos browser). -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <!-- "All files access" on Android 11+: needed to list folders and open raw files by path. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="34" />
+    <!-- The UI is drawn with wgpu: Vulkan when present, OpenGL ES 3.0 otherwise. -->
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x400003" android:required="false" />
 
@@ -19,13 +29,17 @@
         android:allowBackup="false"
         android:requestLegacyExternalStorage="true"
         android:largeHeap="true">
+
+        <!-- The only screen: the native activity that hosts the Rust UI. -->
         <activity
             android:name="android.app.NativeActivity"
             android:exported="true"
             android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|uiMode|density"
             android:resizeableActivity="true">
+            <!-- The shared library to load: liblightcraft_android.so. -->
             <meta-data android:name="android.app.lib_name" android:value="lightcraft_android" />
             <intent-filter>
+                <!-- Shows the app in the launcher. -->
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>

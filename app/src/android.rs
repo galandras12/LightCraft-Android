@@ -1,7 +1,6 @@
 //! NativeActivity entry point.
 //!
-//! The library lives in the app's private storage; the first start seeds the procedural demo
-//! photos. File import (Storage Access Framework) is not wired yet.
+//! The library lives in the app's private storage; a new library starts empty (no sample photos). File import (Storage Access Framework) is not wired yet.
 
 use android_activity::AndroidApp;
 use jni::JavaVM;
@@ -9,8 +8,10 @@ use jni::objects::{JObject, JValue};
 use lightcraft_engine::Session;
 use lightcraft_ui_egui::{LightcraftApp, Services};
 
+/// The application id; it must match the `package` of `android/AndroidManifest.xml`.
 const PACKAGE: &str = "ai.storyteller.lightcraft.android";
 
+/// The running activity, kept for the JNI calls below.
 static APP: std::sync::OnceLock<AndroidApp> = std::sync::OnceLock::new();
 
 /// Runs `f` with a JNI environment and the activity; a Java exception is cleared and reported.
@@ -30,6 +31,7 @@ fn with_jni<T>(f: impl FnOnce(&mut jni::JNIEnv, &JObject) -> jni::errors::Result
     }
 }
 
+/// The Android API level of the device.
 fn sdk_int(env: &mut jni::JNIEnv) -> jni::errors::Result<i32> {
     env.get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?.i()
 }
@@ -76,6 +78,8 @@ fn storage_access() -> bool {
     .unwrap_or(false)
 }
 
+/// Asks the user for file access: opens the "All files access" settings page of the app (Android 11+),
+/// or shows the permission prompt on older versions.
 fn request_storage_access() {
     with_jni(|env, activity| {
         if sdk_int(env)? >= 30 {
@@ -95,8 +99,10 @@ fn request_storage_access() {
     });
 }
 
+/// Wraps the upstream app so that `eframe` can drive it.
 struct App(LightcraftApp);
 
+/// Forwards the frame callbacks of `eframe` to the upstream app.
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.0.logic(ctx);
@@ -136,10 +142,10 @@ fn android_main(app: AndroidApp) {
         options,
         Box::new(move |cc| {
             let mut session = Session::new().with_fs().with_default_denoise_models().with_system_clock();
-            let opened = library.as_deref().map(|dir| session.open_library(dir, true).map(|_| ()));
+            let opened = library.as_deref().map(|dir| session.open_library(dir, false).map(|_| ()));
             if let Some(Err(e)) = opened {
                 log::error!("library: {e}");
-                session = Session::with_demo().with_fs().with_system_clock();
+                session = Session::new().with_fs().with_system_clock();
             }
             // the "can't lock the library" notice is for desktops with two programs on one library
             for w in session.take_library_warnings() {

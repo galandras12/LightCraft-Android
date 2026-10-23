@@ -20,14 +20,19 @@ use lightcraft_ui_egui::panels::edit::{apply_slider_out, control};
 use lightcraft_ui_egui::state::{RightPanel, ViewMode};
 use lightcraft_ui_egui::theme::Tokens;
 use lightcraft_ui_egui::widgets;
+
+use crate::welcome;
 use serde_json::json;
 
 /// UI scale on top of the device's density: fingers need bigger targets than a mouse.
 pub const ZOOM: f32 = 1.15;
 /// Width (points, after [`ZOOM`]) from which the edit tools sit beside the photo.
 const WIDE: f32 = 760.0;
+/// Height of the top bar in points (the status bar inset is added on top of it).
 const BAR_H: f32 = 56.0;
+/// Height of the bottom tool bar (Auto, Presets, Crop, Edit, Masking, Remove) in points.
 const TOOLBAR_H: f32 = 64.0;
+/// Height of the row of edit tabs (Light, Color, Effects, Detail, Optics) in points.
 const TABS_H: f32 = 52.0;
 
 /// What the host platform provides to the layout.
@@ -42,12 +47,15 @@ pub struct Platform {
     pub storage_root: std::path::PathBuf,
 }
 
+/// The platform services, set once by the host at start-up ([`set_platform`]).
 static PLATFORM: std::sync::OnceLock<Platform> = std::sync::OnceLock::new();
 
+/// Installs the platform services. Only the first call has an effect.
 pub fn set_platform(p: Platform) {
     let _ = PLATFORM.set(p);
 }
 
+/// The platform services; desktop defaults (no insets, storage always readable) when the host set none.
 fn platform() -> &'static Platform {
     PLATFORM.get_or_init(|| Platform {
         insets_px: || [0.0; 4],
@@ -57,6 +65,7 @@ fn platform() -> &'static Platform {
     })
 }
 
+/// Switches a `LightcraftApp` to the phone / tablet layout and hides the desktop filmstrip.
 pub fn install(app: &mut LightcraftApp) {
     app.mobile_layout = Some(layout);
     app.ui.filmstrip = false;
@@ -92,6 +101,7 @@ enum Tab {
     Optics,
 }
 
+/// Labels and icons of the edit tabs.
 impl Tab {
     const ALL: [Tab; 5] = [Tab::Light, Tab::Color, Tab::Effects, Tab::Detail, Tab::Optics];
     fn label(self) -> &'static str {
@@ -124,11 +134,16 @@ struct State {
     browser: Option<Browser>,
 }
 
+/// The whole screen: picks the file browser, the library grid (or welcome screen) or the edit screen,
+/// and paints the system bar insets in the chrome colour. Called by the upstream UI in place of its desktop layout.
 fn layout(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let key = Id::new("lightcraft-mobile");
     let mut st: State = ctx.data(|d| d.get_temp(key)).unwrap_or_default();
-    if !matches!(app.ui.view, ViewMode::PhotoGrid | ViewMode::SquareGrid | ViewMode::Detail) {
+    // Only the grid and the single-photo view exist here; an empty library has no photo to
+    // show, so it always uses the grid (where the welcome screen is).
+    let empty = panels::empty_library::shown(&app.session);
+    if !matches!(app.ui.view, ViewMode::PhotoGrid | ViewMode::SquareGrid | ViewMode::Detail) || (empty && app.ui.view == ViewMode::Detail) {
         let _ = app.run("view.photoGrid", json!({}));
     }
     let ppp = ctx.pixels_per_point().max(0.5);
@@ -137,9 +152,11 @@ fn layout(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     let t_ = Tokens::get(&ctx);
     // the system bars' area is painted in the chrome colour, so content never runs under it
     if insets.left > 0.5 {
+        // Left cut-out / system bar (landscape): a plain strip in the chrome colour.
         egui::Panel::left("m_inset_l").exact_size(insets.left).frame(Frame::NONE.fill(t_.chrome)).show(ui, |_| {});
     }
     if insets.right > 0.5 {
+        // Right cut-out / system bar (landscape).
         egui::Panel::right("m_inset_r").exact_size(insets.right).frame(Frame::NONE.fill(t_.chrome)).show(ui, |_| {});
     }
     let detail = app.ui.view == ViewMode::Detail;
@@ -165,14 +182,18 @@ struct Insets {
     bottom: f32,
 }
 
+/// A 44 x 44 point icon button of the top bar.
 fn icon_btn(ui: &mut egui::Ui, id: &str, icon: Icon, active: bool, enabled: bool, tip: &str) -> egui::Response {
     widgets::icon_button(ui, id, icon, vec2(44.0, 44.0), active, enabled, tip)
 }
 
+/// The frame (background and padding) of the top bars.
 fn bar_frame(t: &Tokens) -> Frame {
     Frame::NONE.fill(t.chrome).inner_margin(Margin { left: 6, right: 6, top: 0, bottom: 0 })
 }
 
+/// The top bar. In the library it shows the title, the photo count, the Add photos (+) button and a menu;
+/// in the edit screen the back arrow, the position and file name of the photo, Undo and a menu.
 fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: bool, insets: Insets) {
     let t = Tokens::get(ui.ctx());
     egui::Panel::top("m_top").exact_size(BAR_H + insets.top).frame(bar_frame(&t)).show(ui, |ui| {
@@ -180,11 +201,13 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             if detail {
+                // Back arrow: leaves the photo and returns to the library grid.
                 if icon_btn(ui, "m_back", Icon::Back, false, true, "Back to library").clicked() {
                     st.tool = Tool::None;
                     app.ui.right = RightPanel::Edit;
                     let _ = app.run("view.photoGrid", json!({}));
                 }
+                // Position of the active photo in the visible list ("3 of 24") and its file name.
                 let active = app.session.active();
                 let visible = app.session.visible_shared().1;
                 let pos = active.and_then(|a| visible.iter().position(|p| *p == a));
@@ -197,8 +220,10 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
                     ui.add(egui::Label::new(RichText::new(name).size(15.0).color(t.text)).truncate());
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    // Overflow menu ("...").
                     let more = icon_btn(ui, "m_more", Icon::More, false, true, "More");
                     egui::Popup::menu(&more).show(|ui| detail_menu(app, ui));
+                    // Undo: a text button, disabled look when there is nothing to undo.
                     let can_undo = !app.session.undo.is_empty();
                     if widgets::text_button(ui, "m_undo", "Undo", false).clicked() && can_undo {
                         let _ = app.run("edit.undo", json!({}));
@@ -206,6 +231,7 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
                 });
             } else {
                 ui.add_space(10.0);
+                // Number of photos shown under the title.
                 let total = app.session.visible_shared().1.len();
                 ui.vertical(|ui| {
                     ui.add_space(8.0);
@@ -214,8 +240,10 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
                     ui.label(RichText::new(format!("{total} photos")).size(12.0).color(t.text_dim));
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    // Overflow menu ("...") of the library.
                     let more = icon_btn(ui, "m_more", Icon::More, false, true, "More");
                     egui::Popup::menu(&more).show(|ui| grid_menu(app, ui));
+                    // "+" opens the file browser to add photos.
                     if icon_btn(ui, "m_import", Icon::Plus, false, true, "Add photos").clicked() {
                         st.browser = Some(Browser::open(&start_dir()));
                     }
@@ -225,6 +253,7 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
     });
 }
 
+/// The overflow menu of the edit screen: redo, previous / next photo, reset, copy / paste edits, before / after.
 fn detail_menu(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     ui.set_min_width(180.0);
     if ui.add_enabled(!app.session.redo.is_empty(), egui::Button::new("Redo")).clicked() {
@@ -257,6 +286,7 @@ fn detail_menu(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     }
 }
 
+/// The overflow menu of the library: grid style and Select all.
 fn grid_menu(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     ui.set_min_width(180.0);
     if ui.button("Photo grid").clicked() {
@@ -276,15 +306,28 @@ fn grid_menu(app: &mut LightcraftApp, ui: &mut egui::Ui) {
 // ---------------------------------------------------------------------------------------------
 // library
 
+/// The library: the photo grid, or the welcome screen while the library is empty.
+/// A tap on a photo opens it in the edit screen.
 fn grid_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, insets: Insets) {
     let t = Tokens::get(ui.ctx());
     if insets.bottom > 0.5 {
+        // Keeps the grid above the navigation bar.
         egui::Panel::bottom("m_nav_pad").exact_size(insets.bottom).frame(Frame::NONE.fill(t.grid_bg)).show(ui, |_| {});
     }
     // a thumbnail about a third of the width: three columns on a phone
     let width = ui.max_rect().width();
     app.ui.thumb_size = (width / 3.0).clamp(96.0, 240.0);
+    // An empty library shows the welcome screen, whose button opens the file browser.
+    if panels::empty_library::shown(&app.session) {
+        // The welcome screen fills the whole body.
+        let tapped = egui::CentralPanel::default().frame(Frame::NONE.fill(t.grid_bg)).show(ui, welcome::show).inner;
+        if tapped {
+            st.browser = Some(Browser::open(&start_dir()));
+        }
+        return;
+    }
     let before = app.session.active();
+    // The photo grid fills the whole body.
     let rect = egui::CentralPanel::default().frame(Frame::NONE.fill(t.grid_bg)).show(ui, |ui| {
         let r = ui.max_rect();
         panels::grid::show(app, ui);
@@ -307,6 +350,8 @@ fn grid_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, inset
 // ---------------------------------------------------------------------------------------------
 // edit
 
+/// The edit screen: the photo, the tool bar at the bottom and, for the chosen tool, a sheet above it
+/// (portrait) or a panel on the right (wide screens).
 fn edit_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, wide: bool, insets: Insets) {
     let t = Tokens::get(ui.ctx());
     let height = ui.max_rect().height();
@@ -320,6 +365,7 @@ fn edit_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, wide:
     tool_bar(app, ui, st, insets.bottom);
     if st.tool != Tool::None {
         if wide {
+            // Wide screens: the tool sheet is a panel on the right, with the tabs on top of it.
             egui::Panel::right("m_side").exact_size(380.0).frame(Frame::NONE.fill(t.chrome)).show(ui, |ui| {
                 if st.tool == Tool::Edit {
                     tab_row(ui, st);
@@ -328,21 +374,26 @@ fn edit_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, wide:
             });
         } else {
             if st.tool == Tool::Edit {
+                // Narrow screens: the tabs sit just above the tool bar...
                 egui::Panel::bottom("m_tabs").exact_size(TABS_H).frame(Frame::NONE.fill(t.chrome)).show(ui, |ui| tab_row(ui, st));
             }
+            // ...and the tool sheet (sliders, presets, crop...) above the tabs, about a third of the screen high.
             egui::Panel::bottom("m_sheet")
                 .exact_size((height * 0.36).clamp(180.0, 420.0))
                 .frame(Frame::NONE.fill(t.chrome).stroke(Stroke::new(1.0, t.divider)))
                 .show(ui, |ui| sheet(app, ui, st));
         }
     }
+    // The photo itself (the upstream loupe: pinch / scroll to zoom, drag to pan).
     egui::CentralPanel::default().frame(Frame::NONE.fill(t.canvas)).show(ui, |ui| {
         panels::detail::show(app, ui);
     });
 }
 
+/// The bottom tool bar. Auto applies automatic settings at once; the other buttons open or close their tool sheet.
 fn tool_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, inset_bottom: f32) {
     let t = Tokens::get(ui.ctx());
+    // The tool bar is always visible at the bottom, above the navigation bar inset.
     egui::Panel::bottom("m_tools").exact_size(TOOLBAR_H + inset_bottom).frame(Frame::NONE.fill(t.chrome).stroke(Stroke::new(1.0, t.divider))).show(ui, |ui| {
         let w = ui.available_width();
         let tools: [(Option<Tool>, Icon, &str); 6] = [
@@ -385,6 +436,7 @@ fn tool_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, inset_bo
     });
 }
 
+/// The row of tabs of the Edit tool (Light, Color, Effects, Detail, Optics); it scrolls sideways if it does not fit.
 fn tab_row(ui: &mut egui::Ui, st: &mut State) {
     let t = Tokens::get(ui.ctx());
     let w = ui.available_width();
@@ -423,7 +475,9 @@ fn sheet(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State) {
     }
 }
 
+/// The sliders of the Light tab (control ids of the engine).
 const LIGHT: &[&str] = &["light.exposure", "light.contrast", "light.highlights", "light.shadows", "light.whites", "light.blacks"];
+/// The sliders of the Effects tab: texture, clarity, dehaze, vignette and grain.
 const EFFECTS: &[&str] = &[
     "effects.texture",
     "effects.clarity",
@@ -437,6 +491,7 @@ const EFFECTS: &[&str] = &[
     "grain.size",
     "grain.roughness",
 ];
+/// The sliders of the Detail tab: sharpening and noise reduction.
 const DETAIL: &[&str] = &[
     "detail.sharpenAmount",
     "detail.sharpenRadius",
@@ -449,6 +504,7 @@ const DETAIL: &[&str] = &[
     "detail.nrColorDetail",
     "detail.nrColorSmoothness",
 ];
+/// The sliders of the Optics tab: lens corrections and defringe.
 const OPTICS: &[&str] = &[
     "optics.profileDistortion",
     "optics.profileVignetting",
@@ -473,6 +529,7 @@ const REL_TEMP: ControlSpec = ControlSpec {
     decimals: 0,
     track: Track::Temp,
 };
+/// The tint slider for rendered files (same scale as [`REL_TEMP`]).
 const REL_TINT: ControlSpec = ControlSpec {
     id: "wb.tintRel",
     label: "Tint",
@@ -485,14 +542,17 @@ const REL_TINT: ControlSpec = ControlSpec {
     track: Track::Tint,
 };
 
+/// Converts a colour temperature in Kelvin to the relative -100..100 scale (mired shift around 6500 K).
 fn k_to_rel(k: f64) -> f64 {
     ((1e6 / 6500.0 - 1e6 / k) / 0.8).clamp(-100.0, 100.0)
 }
 
+/// Converts the relative -100..100 temperature back to Kelvin.
 fn rel_to_k(r: f64) -> f64 {
     1e6 / (1e6 / 6500.0 - r * 0.8)
 }
 
+/// The sliders of the chosen Edit tab for the active photo. A slider drag is one undo step.
 fn edit_sliders(app: &mut LightcraftApp, ui: &mut egui::Ui, tab: Tab) {
     let t = Tokens::get(ui.ctx());
     let Some(id) = app.session.active() else {
@@ -547,6 +607,7 @@ fn edit_sliders(app: &mut LightcraftApp, ui: &mut egui::Ui, tab: Tab) {
     });
 }
 
+/// Draws one slider per control id.
 fn list(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &lightcraft_develop::DevelopSettings, ids: &[&str]) {
     for id in ids {
         control(app, ui, d, id, true);
@@ -572,17 +633,20 @@ struct Browser {
     error: Option<String>,
 }
 
+/// Where the file browser starts: the camera folder (DCIM) when there is one, else the storage root.
 fn start_dir() -> std::path::PathBuf {
     let root = platform().storage_root.clone();
     let dcim = root.join("DCIM");
     if dcim.is_dir() { dcim } else { root }
 }
 
+/// Whether a file name has an extension the engine can import.
 fn is_photo(name: &str) -> bool {
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
     lightcraft_engine::import::EXTENSIONS.iter().any(|e| e.eq_ignore_ascii_case(&ext))
 }
 
+/// Reading and navigating the folder of the file browser.
 impl Browser {
     fn open(dir: &std::path::Path) -> Browser {
         let mut b = Browser { dir: dir.to_path_buf(), entries: vec![], selected: Default::default(), error: None };
@@ -622,10 +686,13 @@ impl Browser {
     }
 }
 
+/// A file size as text: kB below 1 MB, MB above.
 fn size_text(bytes: u64) -> String {
     if bytes >= 1 << 20 { format!("{:.1} MB", bytes as f64 / (1 << 20) as f64) } else { format!("{} kB", bytes.div_ceil(1024)) }
 }
 
+/// The Add photos screen: a browser of the device storage with multi-select and an import button;
+/// or, when the app has no access to the files yet, a page that asks for it.
 fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, insets: Insets) {
     let t = Tokens::get(ui.ctx());
     let Some(mut b) = st.browser.take() else { return };
@@ -635,6 +702,7 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
     let mut import: Option<Vec<String>> = None;
     let mut go: Option<std::path::PathBuf> = None;
 
+    // Top bar of the browser: back / up one folder, folder name, Select all.
     egui::Panel::top("m_b_top").exact_size(BAR_H + insets.top).frame(bar_frame(&t)).show(ui, |ui| {
         ui.add_space(insets.top);
         ui.horizontal_centered(|ui| {
@@ -652,6 +720,7 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
                 ui.add(egui::Label::new(RichText::new(name).size(16.0).color(t.text)).truncate());
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // "Select all" selects every photo of the folder, or clears the selection when all are selected.
                 if access && b.files().next().is_some() && widgets::text_button(ui, "m_b_all", "Select all", false).clicked() {
                     let all: Vec<_> = b.files().map(|e| e.path.clone()).collect();
                     if all.iter().all(|p| b.selected.contains(p)) {
@@ -664,8 +733,10 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
         });
     });
 
+    // Number of photos ticked in the current folder.
     let n = b.selected.len();
     if access {
+        // Bottom bar: the blue Import button (the ticked photos, or the whole folder when none is ticked).
         egui::Panel::bottom("m_b_bottom").exact_size(TOOLBAR_H + insets.bottom).frame(Frame::NONE.fill(t.chrome).stroke(Stroke::new(1.0, t.divider))).show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(16.0);
@@ -714,6 +785,7 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             for (i, e) in b.entries.clone().iter().enumerate() {
+                // One row: icon, name, size or chevron; a tap opens a folder or ticks a photo.
                 let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 60.0), Sense::click());
                 let chosen = b.selected.contains(&e.path);
                 if chosen {

@@ -1,4 +1,5 @@
 //! `cargo run --release --example cr3probe -- file.CR3`: what the raw decoder says about a file.
+/// Reads the file, prints the header probe, then decodes it and prints the sensor statistics.
 fn main() {
     let path = std::env::args().nth(1).expect("file");
     let bytes = std::fs::read(&path).expect("read");

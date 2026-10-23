@@ -1,13 +1,17 @@
+# Workspace of the Android port. The upstream LightCraft crates are not members: they are
+# checked out into third_party/ (see scripts/fetch-upstream.sh) and used as path dependencies.
 [workspace]
 resolver = "3"
 members = ["app"]
 exclude = ["third_party"]
 
+# Release builds: thin LTO and one codegen unit give the smallest, fastest library.
 [profile.release]
 lto = "thin"
 codegen-units = 1
 debug = false
 
+# Debug builds: optimise the dependencies, or the raw decoders are far too slow to use.
 [profile.dev.package."*"]
 opt-level = 2
 [profile.dev]

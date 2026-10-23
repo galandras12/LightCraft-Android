@@ -1,3 +1,11 @@
+Android port: layout hook for the upstream UI.
+
+1. LightcraftApp gets a `mobile_layout` field. When it is set, `ui()` calls it instead of drawing
+   the desktop layout (top bar, tool strip, docked panels). Everything else (dialogs, toasts,
+   rendering, commands) keeps running as upstream does.
+2. `panels::edit::control` (one slider row with undo handling) becomes public so that the phone
+   layout can draw the edit sliders.
+
 diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
 index 1b25179..d4c3d32 100644
 --- a/crates/ui-egui/src/lib.rs

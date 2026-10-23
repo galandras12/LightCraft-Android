@@ -6,28 +6,37 @@ license = "MIT OR Apache-2.0"
 publish = false
 description = "Android host for LightCraft (egui + wgpu over NativeActivity) with a phone/tablet layout"
 
+# cdylib: the Android shared library (loaded by NativeActivity). rlib: lets the desktop examples
+# (snapshots, raw file checks) use the same layout code.
 [lib]
 name = "lightcraft_android"
 crate-type = ["cdylib", "rlib"]
 
 # The upstream checkout is made (and patched) by scripts/fetch-upstream.sh.
 [dependencies]
+# The LightCraft engine (library, edits, import, export) and its egui UI, with our patch applied.
 lightcraft-engine = { path = "../third_party/lightcraft/crates/engine" }
 lightcraft-ui-egui = { path = "../third_party/lightcraft/crates/ui-egui" }
+# Types of the develop settings (slider specs) used by the edit tabs.
 lightcraft-develop = { path = "../third_party/lightcraft/crates/develop" }
 # HEIC/HEIF (iPhone, Samsung) is decoded in pure Rust; the feature is off in the desktop build.
 lightcraft-codecs = { path = "../third_party/lightcraft/crates/codecs", features = ["heif"] }
+# The photo catalogue (photo ids).
 lightcraft-catalog = { path = "../third_party/lightcraft/crates/catalog" }
+# The UI toolkit; the version must match the one the upstream UI uses.
 egui = "0.36"
 serde_json = "1"
 log = "0.4"
 
+# Android only: the window / event loop (eframe + wgpu), the native activity glue, logging to
+# logcat and JNI (system bar insets, the file access permission).
 [target.'cfg(target_os = "android")'.dependencies]
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "android-native-activity"] }
 android-activity = { version = "0.6", features = ["native-activity"] }
 android_logger = "0.15"
 jni = "0.21"
 
+# Only for the desktop examples: writing PNG snapshots and building a test HEIC file.
 [dev-dependencies]
 lightcraft-raw = { path = "../third_party/lightcraft/crates/raw" }
 lightcraft-heif = { path = "../third_party/lightcraft/crates/heif", features = ["testdata"] }

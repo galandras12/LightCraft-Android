@@ -7,6 +7,7 @@ use lightcraft_ui_egui::headless::Headless;
 use lightcraft_ui_egui::{LightcraftApp, Services};
 use serde_json::json;
 
+/// Writes an egui image as a PNG file.
 fn save(img: &egui::ColorImage, path: &std::path::Path) {
     let [w, h] = img.size;
     let bytes: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
@@ -14,6 +15,7 @@ fn save(img: &egui::ColorImage, path: &std::path::Path) {
     println!("{}", path.display());
 }
 
+/// Renders the welcome screen, library, file browser and edit tabs for a phone and a tablet.
 fn main() {
     let out = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "preview".into()));
     std::fs::create_dir_all(&out).expect("out dir");
@@ -38,6 +40,14 @@ fn main() {
         storage_root: photos.clone(),
     });
     for (name, w, h, ppp) in [("phone", 393.0, 873.0, 2.75), ("tablet", 1280.0, 800.0, 2.0)] {
+        // an empty library first: the welcome screen
+        let empty = Session::new().with_fs().with_system_clock();
+        let mut welcome_app = LightcraftApp::new(empty, Services::default());
+        lightcraft_android::mobile::install(&mut welcome_app);
+        let mut welcome_host = Headless::new(welcome_app, [w, h], ppp);
+        welcome_host.view.ctx.set_zoom_factor(lightcraft_android::mobile::ZOOM);
+        welcome_host.settle(Duration::from_secs(5));
+        save(&welcome_host.snapshot(Duration::from_secs(10)), &out.join(format!("{name}-welcome.png")));
         let session = Session::with_demo().with_fs().with_system_clock();
         let mut app = LightcraftApp::new(session, Services::default());
         lightcraft_android::mobile::install(&mut app);

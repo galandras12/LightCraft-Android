@@ -34,8 +34,10 @@ google-services.json
 # Android Profiling
 *.hprof
 
-# Rust / cargo-ndk
+# Rust / cargo-ndk build output
 /target/
 /jniLibs/
+# ...but the test APKs in Debug/ are kept (they are the deliverable)
 !/Debug/*.apk
+# the patched upstream checkout made by scripts/fetch-upstream.sh
 /third_party/

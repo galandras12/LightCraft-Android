@@ -7,6 +7,7 @@ use lightcraft_ui_egui::headless::Headless;
 use lightcraft_ui_egui::{LightcraftApp, Services};
 use serde_json::json;
 
+/// Imports every file of the folder and prints how each one opened; saves a snapshot of the first photo.
 fn main() {
     let dir = std::env::args().nth(1).expect("dir");
     let out = std::env::args().nth(2).unwrap_or_else(|| "cr3.png".into());
