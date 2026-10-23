@@ -18,6 +18,21 @@ fn main() {
     let out = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "preview".into()));
     std::fs::create_dir_all(&out).expect("out dir");
     // (name, width pt, height pt, ppp): a 1080x2400 phone and a 1600x2560 tablet in landscape
+    // a folder with a few photos to import, for the file browser
+    let photos = std::env::temp_dir().join("lc-preview-photos");
+    let _ = std::fs::remove_dir_all(&photos);
+    std::fs::create_dir_all(photos.join("DCIM")).expect("photos dir");
+    for i in 0..4u8 {
+        let img = image::RgbImage::from_fn(240, 160, |x, y| image::Rgb([(x as u8).wrapping_add(i * 50), y as u8, 128 + i * 20]));
+        img.save(photos.join("DCIM").join(format!("IMG_{i:04}.jpg"))).expect("jpg");
+    }
+    std::fs::create_dir_all(photos.join("Pictures")).expect("dir");
+    lightcraft_android::mobile::set_platform(lightcraft_android::mobile::Platform {
+        insets_px: || [0.0, 72.0, 0.0, 48.0],
+        storage_access: || true,
+        request_storage_access: || {},
+        storage_root: photos.clone(),
+    });
     for (name, w, h, ppp) in [("phone", 393.0, 873.0, 2.75), ("tablet", 1280.0, 800.0, 2.0)] {
         let session = Session::with_demo().with_fs().with_system_clock();
         let mut app = LightcraftApp::new(session, Services::default());
@@ -31,6 +46,20 @@ fn main() {
         let _ = host.app.run("view.detail", json!({}));
         host.settle(Duration::from_secs(5));
         save(&host.snapshot(Duration::from_secs(5)), &out.join(format!("{name}-detail.png")));
+        let _ = host.app.run("view.photoGrid", json!({}));
+        lightcraft_android::mobile::open_browser(&host.view.ctx, &photos);
+        host.settle(Duration::from_secs(5));
+        save(&host.snapshot(Duration::from_secs(5)), &out.join(format!("{name}-browser.png")));
+        lightcraft_android::mobile::open_browser(&host.view.ctx, &photos.join("DCIM"));
+        host.settle(Duration::from_secs(5));
+        save(&host.snapshot(Duration::from_secs(5)), &out.join(format!("{name}-browser-dcim.png")));
+        let before = host.app.session.catalog.len();
+        let r = lightcraft_ui_egui::import::start_paths(&mut host.app, vec![photos.join("DCIM").to_string_lossy().into_owned()]);
+        println!("start_paths: {r:?}");
+        host.settle(Duration::from_secs(20));
+        println!("catalog {before} -> {}", host.app.session.catalog.len());
+        save(&host.snapshot(Duration::from_secs(5)), &out.join(format!("{name}-after-import.png")));
+        let _ = host.app.run("view.detail", json!({}));
         for tab in ["light", "color"] {
             lightcraft_android::mobile::open_edit_tab(&host.view.ctx, tab);
             host.settle(Duration::from_secs(5));

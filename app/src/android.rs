@@ -4,8 +4,96 @@
 //! photos. File import (Storage Access Framework) is not wired yet.
 
 use android_activity::AndroidApp;
+use jni::JavaVM;
+use jni::objects::{JObject, JValue};
 use lightcraft_engine::Session;
 use lightcraft_ui_egui::{LightcraftApp, Services};
+
+const PACKAGE: &str = "ai.storyteller.lightcraft.android";
+
+static APP: std::sync::OnceLock<AndroidApp> = std::sync::OnceLock::new();
+
+/// Runs `f` with a JNI environment and the activity; a Java exception is cleared and reported.
+fn with_jni<T>(f: impl FnOnce(&mut jni::JNIEnv, &JObject) -> jni::errors::Result<T>) -> Option<T> {
+    let app = APP.get()?;
+    // SAFETY: the pointers come from the running NativeActivity and stay valid while it lives.
+    let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr() as *mut jni::sys::JavaVM) }.ok()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    let activity = unsafe { JObject::from_raw(app.activity_as_ptr() as jni::sys::jobject) };
+    match f(&mut env, &activity) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            log::warn!("jni: {e}");
+            let _ = env.exception_clear();
+            None
+        }
+    }
+}
+
+fn sdk_int(env: &mut jni::JNIEnv) -> jni::errors::Result<i32> {
+    env.get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?.i()
+}
+
+/// `[left, top, right, bottom]` of the system bars and display cut-out, in pixels.
+fn insets_px() -> [f32; 4] {
+    with_jni(|env, activity| {
+        let window = env.call_method(activity, "getWindow", "()Landroid/view/Window;", &[])?.l()?;
+        let decor = env.call_method(&window, "getDecorView", "()Landroid/view/View;", &[])?.l()?;
+        let wi = env.call_method(&decor, "getRootWindowInsets", "()Landroid/view/WindowInsets;", &[])?.l()?;
+        if wi.as_raw().is_null() {
+            return Ok([0.0; 4]);
+        }
+        if sdk_int(env)? >= 30 {
+            let bars = env.call_static_method("android/view/WindowInsets$Type", "systemBars", "()I", &[])?.i()?;
+            let cutout = env.call_static_method("android/view/WindowInsets$Type", "displayCutout", "()I", &[])?.i()?;
+            let ins = env.call_method(&wi, "getInsets", "(I)Landroid/graphics/Insets;", &[JValue::Int(bars | cutout)])?.l()?;
+            let mut out = [0.0; 4];
+            for (i, f) in ["left", "top", "right", "bottom"].into_iter().enumerate() {
+                out[i] = env.get_field(&ins, f, "I")?.i()? as f32;
+            }
+            Ok(out)
+        } else {
+            let mut out = [0.0; 4];
+            for (i, m) in ["getSystemWindowInsetLeft", "getSystemWindowInsetTop", "getSystemWindowInsetRight", "getSystemWindowInsetBottom"].into_iter().enumerate() {
+                out[i] = env.call_method(&wi, m, "()I", &[])?.i()? as f32;
+            }
+            Ok(out)
+        }
+    })
+    .unwrap_or([0.0; 4])
+}
+
+/// All-files access on Android 11+, the read permission before it.
+fn storage_access() -> bool {
+    with_jni(|env, activity| {
+        if sdk_int(env)? >= 30 {
+            env.call_static_method("android/os/Environment", "isExternalStorageManager", "()Z", &[])?.z()
+        } else {
+            let perm = env.new_string("android.permission.READ_EXTERNAL_STORAGE")?;
+            Ok(env.call_method(activity, "checkSelfPermission", "(Ljava/lang/String;)I", &[JValue::Object(&perm)])?.i()? == 0)
+        }
+    })
+    .unwrap_or(false)
+}
+
+fn request_storage_access() {
+    with_jni(|env, activity| {
+        if sdk_int(env)? >= 30 {
+            let action = env.new_string("android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION")?;
+            let intent = env.new_object("android/content/Intent", "(Ljava/lang/String;)V", &[JValue::Object(&action)])?;
+            let uri_text = env.new_string(format!("package:{PACKAGE}"))?;
+            let uri = env.call_static_method("android/net/Uri", "parse", "(Ljava/lang/String;)Landroid/net/Uri;", &[JValue::Object(&uri_text)])?.l()?;
+            env.call_method(&intent, "setData", "(Landroid/net/Uri;)Landroid/content/Intent;", &[JValue::Object(&uri)])?;
+            env.call_method(activity, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)])?;
+        } else {
+            let perm = env.new_string("android.permission.READ_EXTERNAL_STORAGE")?;
+            let string_class = env.find_class("java/lang/String")?;
+            let list = env.new_object_array(1, string_class, &perm)?;
+            env.call_method(activity, "requestPermissions", "([Ljava/lang/String;I)V", &[JValue::Object(&list), JValue::Int(1)])?;
+        }
+        Ok(())
+    });
+}
 
 struct App(LightcraftApp);
 
@@ -26,6 +114,13 @@ impl eframe::App for App {
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
     android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info).with_tag("LightCraft"));
+    let _ = APP.set(app.clone());
+    crate::mobile::set_platform(crate::mobile::Platform {
+        insets_px,
+        storage_access,
+        request_storage_access,
+        storage_root: "/storage/emulated/0".into(),
+    });
     let data = app.internal_data_path();
     if let Some(dir) = &data {
         // the engine's config / cache lookups start from $HOME
