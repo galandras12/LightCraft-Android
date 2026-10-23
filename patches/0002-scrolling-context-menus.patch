@@ -1,0 +1,23 @@
+Android port: context menus scroll.
+
+A long context menu (the photo menu has about 30 entries) ran off a phone screen, so its last
+entries (Delete, Export) could not be reached. The menu now scrolls and is at most 80 % of the
+screen high.
+
+diff --git a/crates/ui-egui/src/widgets.rs b/crates/ui-egui/src/widgets.rs
+index 2db3f88..40316fd 100644
+--- a/crates/ui-egui/src/widgets.rs
++++ b/crates/ui-egui/src/widgets.rs
+@@ -59,7 +59,11 @@ pub fn menu_button<'a, R>(ui: &mut Ui, atoms: impl egui::IntoAtoms<'a>, contents
+ /// reopened the menu at the pointer and closed it again on the same frame, a one-frame flash.
+ /// The click that opens (or moves) the menu is not the one that closes it.
+ pub fn context_menu(response: &Response, add_contents: impl FnOnce(&mut Ui)) -> Option<egui::InnerResponse<()>> {
+-    egui::Popup::context_menu(response).close_behavior(context_menu_close(response, egui::PopupCloseBehavior::CloseOnClick)).show(add_contents)
++    // Android patch: a long menu scrolls (at most 80 % of the screen high) instead of running off it.
++    let max_height = response.ctx.content_rect().height() * 0.8;
++    egui::Popup::context_menu(response).close_behavior(context_menu_close(response, egui::PopupCloseBehavior::CloseOnClick)).show(|ui| {
++        egui::ScrollArea::vertical().max_height(max_height).show(ui, add_contents);
++    })
+ }
+ 
+ /// How a context menu on `response` closes this frame: `default`, except on the frame of the

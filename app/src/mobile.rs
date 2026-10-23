@@ -268,6 +268,12 @@ fn detail_menu(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         let _ = app.run("library.next", json!({}));
         ui.close();
     }
+    // Moves the photo to Recently Deleted (the file on the device is not touched).
+    if ui.button("Delete photo").clicked() {
+        let _ = app.run("photo.delete", json!({}));
+        app.toast(ui.ctx(), "Moved to Recently Deleted");
+        ui.close();
+    }
     if ui.button("Reset edits").clicked() {
         let _ = app.run("develop.reset", json!({}));
         ui.close();
@@ -295,6 +301,12 @@ fn grid_menu(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     }
     if ui.button("Square grid").clicked() {
         let _ = app.run("view.squareGrid", json!({}));
+        ui.close();
+    }
+    // Moves the selected photos (long-press a photo to select it) to Recently Deleted.
+    if ui.button("Delete selected photos").clicked() {
+        let _ = app.run("photo.delete", json!({}));
+        app.toast(ui.ctx(), "Moved to Recently Deleted");
         ui.close();
     }
     if ui.button("Select all").clicked() {
