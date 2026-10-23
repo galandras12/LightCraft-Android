@@ -37,3 +37,4 @@ google-services.json
 # Rust / cargo-ndk
 /target/
 /jniLibs/
+!/Debug/*.apk
