@@ -1,0 +1,109 @@
+Android port: touch-friendly widgets.
+
+* Context menus scroll (a long menu ran off a phone screen) and close only on a tap outside them.
+* Submenus inside such a menu unfold in place on a tap. egui's own submenus open while the pointer
+  hovers, and a finger "hovers" whatever it touches, so they opened and activated by accident.
+* Sliders: only the thumb takes a touch (a finger-sized grab area). A tap on the track does nothing
+  and a drag that starts on the track scrolls the panel, so scrolling past a slider never changes
+  it. A drag moves the thumb by the finger's travel, so the value never jumps to the touch point.
+  Typing a value (tap the number) is unchanged.
+diff --git a/crates/ui-egui/src/widgets.rs b/crates/ui-egui/src/widgets.rs
+index 2db3f88..a5914ff 100644
+--- a/crates/ui-egui/src/widgets.rs
++++ b/crates/ui-egui/src/widgets.rs
+@@ -42,10 +42,30 @@ pub fn arrow_button<'a>(ui: &mut Ui, text: impl egui::IntoAtoms<'a>, icon: Icon,
+ }
+ 
+ /// Keep egui's submenu interaction and layout, using our vector chevron instead of a font glyph.
++///
++/// Android patch: inside a menu that closes only on a tap outside (the context menus below), a
++/// submenu unfolds in place when its header is tapped, and folds again on the next tap. egui's
++/// own submenus open while the pointer hovers, and a finger "hovers" everything it touches, so
++/// they opened and activated by accident.
+ pub fn menu_button<'a, R>(ui: &mut Ui, atoms: impl egui::IntoAtoms<'a>, contents: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<Option<R>> {
+     if !egui::containers::menu::is_in_menu(ui) {
+         return ui.menu_button(atoms, contents);
+     }
++    if egui::containers::menu::MenuConfig::find(ui).close_behavior == egui::PopupCloseBehavior::CloseOnClickOutside {
++        // the header: a button whose chevron points down while the submenu is unfolded
++        let id = ui.next_auto_id().with("unfolded");
++        let open: bool = ui.data(|d| d.get_temp(id)).unwrap_or(false);
++        let button = egui::Button::new(atoms.into_atoms()).right_text("    ");
++        let response = ui.add(button);
++        let center = pos2(response.rect.right() - ui.spacing().button_padding.x - 8.0, response.rect.center().y);
++        let icon = if open { Icon::ChevronDown } else { Icon::ChevronRight };
++        paint(ui.painter(), Rect::from_center_size(center, vec2(16.0, 16.0)), icon, ui.style().interact(&response).fg_stroke.color);
++        let open = if response.clicked() { !open } else { open };
++        ui.data_mut(|d| d.insert_temp(id, open));
++        // the entries of an unfolded submenu are indented under the header
++        let inner = open.then(|| ui.indent(id, contents).inner);
++        return egui::InnerResponse::new(inner, response);
++    }
+     let button = egui::Button::new(atoms.into_atoms()).right_text("    ");
+     let (response, inner) = egui::containers::menu::SubMenuButton::from_button(button).ui(ui, contents);
+     let center = pos2(response.rect.right() - ui.spacing().button_padding.x - 8.0, response.rect.center().y);
+@@ -58,8 +78,14 @@ pub fn menu_button<'a, R>(ui: &mut Ui, atoms: impl egui::IntoAtoms<'a>, contents
+ /// that by the menu's id: a right-click elsewhere on the same widget while its menu is open
+ /// reopened the menu at the pointer and closed it again on the same frame, a one-frame flash.
+ /// The click that opens (or moves) the menu is not the one that closes it.
++///
++/// Android patch: the menu closes only on a tap outside it, so a stray touch inside never makes it
++/// vanish, and a long menu scrolls (at most 80 % of the screen high) instead of running off it.
+ pub fn context_menu(response: &Response, add_contents: impl FnOnce(&mut Ui)) -> Option<egui::InnerResponse<()>> {
+-    egui::Popup::context_menu(response).close_behavior(context_menu_close(response, egui::PopupCloseBehavior::CloseOnClick)).show(add_contents)
++    let max_height = response.ctx.content_rect().height() * 0.8;
++    egui::Popup::context_menu(response).close_behavior(context_menu_close(response, egui::PopupCloseBehavior::CloseOnClickOutside)).show(|ui| {
++        egui::ScrollArea::vertical().max_height(max_height).show(ui, add_contents);
++    })
+ }
+ 
+ /// How a context menu on `response` closes this frame: `default`, except on the frame of the
+@@ -247,7 +273,7 @@ pub(crate) fn shown_value(spec: &ControlSpec, v: f64) -> String {
+ const SCRUB_START: f32 = 3.0;
+ 
+ /// The radius of a slider's hollow ring thumb.
+-const THUMB_RING: f32 = 7.0;
++const THUMB_RING: f32 = 11.0;
+ 
+ /// A Lightroom slider row (label + value above a track with a hollow ring thumb).
+ /// Double-click the label or thumb to reset (hovering either says so). Shift-drag = fine adjustment.
+@@ -263,7 +289,12 @@ pub fn slider(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, label_
+     let label_rect = Rect::from_min_size(pos2(row.left() + pad_l, row.top() + 4.0), vec2(w - pad_l - pad_r, 18.0));
+     let track_rect = Rect::from_min_max(pos2(row.left() + pad_l, row.top() + 22.0), pos2(row.right() - pad_r, row.top() + 40.0));
+     let id = ui.id().with(spec.id);
+-    let resp = ui.interact(track_rect.expand2(vec2(8.0, 2.0)), id, if enabled { Sense::click_and_drag() } else { Sense::hover() });
++    // Android patch: only the thumb takes a touch. A tap on the track does nothing and a drag that
++    // starts on the track scrolls the panel, so scrolling past a slider never changes it. The
++    // thumb's grab area is finger-sized.
++    let thumb_x = track_rect.left() + spec.position(value) as f32 * track_rect.width();
++    let grab = Rect::from_center_size(pos2(thumb_x, track_rect.center().y), vec2(60.0, 40.0));
++    let resp = ui.interact(grab, id, if enabled { Sense::click_and_drag() } else { Sense::hover() });
+     // Keyboard focus survives leaving the row; vertical wheel edits need a fresh click or drag
+     // in it (at most one slider is armed: `wheel_slider_key`).
+     let wheel_id = id.with("wheel-rem");
+@@ -469,14 +500,23 @@ pub fn slider(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, label_
+                 ui.data_mut(|m| m.insert_temp(fine_id, pos));
+                 spec.value_at(pos)
+             } else {
+-                from_x(p.x)
++                // Android patch: the drag moves the thumb by the finger's travel from where the
++                // touch began, so the value never jumps to the touch point.
++                let start_id = id.with("touch-start");
++                if resp.drag_started() {
++                    ui.data_mut(|m| m.insert_temp(start_id, spec.position(value)));
++                }
++                let start = ui.data(|m| m.get_temp::<f64>(start_id)).unwrap_or_else(|| spec.position(value));
++                let origin = ui.input(|i| i.pointer.press_origin()).map_or(p.x, |o| o.x);
++                spec.value_at((start + f64::from((p.x - origin) / track_rect.width())).clamp(0.0, 1.0))
+             };
+             let nv = ((nv / step).round() * step).clamp(spec.min, spec.max);
+             if (nv - value).abs() > 1e-12 {
+                 out.value = Some(nv);
+                 v = nv;
+             }
+-        } else if resp.clicked()
++        } else if false
++            && resp.clicked()
+             && let Some(p) = resp.interact_pointer_pos()
+             // a click on the thumb leaves it there, so the first click of a double-click on it isn't a
+             // history step of its own before the reset

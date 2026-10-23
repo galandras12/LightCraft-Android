@@ -5,9 +5,9 @@ Android port: layout hook for the upstream UI.
    rendering, commands) keeps running as upstream does.
 2. `panels::edit::control` (one slider row with undo handling) becomes public so that the phone
    layout can draw the edit sliders.
-
+3. `LightcraftApp::crop_tool_aspect` becomes public (the crop sheet shows the locked ratio).
 diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
-index 1b25179..d4c3d32 100644
+index 1b25179..b25449e 100644
 --- a/crates/ui-egui/src/lib.rs
 +++ b/crates/ui-egui/src/lib.rs
 @@ -355,6 +355,8 @@ pub struct LightcraftApp {
@@ -27,6 +27,15 @@ index 1b25179..d4c3d32 100644
              native_menu: false,
              native_shortcuts: Default::default(),
              recording_shortcut: None,
+@@ -702,7 +705,7 @@ impl LightcraftApp {
+     }
+ 
+     /// The remembered ratio belongs to the tool until the user starts editing the crop.
+-    pub(crate) fn crop_tool_aspect(&self) -> Option<(u32, u32)> {
++    pub fn crop_tool_aspect(&self) -> Option<(u32, u32)> {
+         let photo = self.session.active()?;
+         let d = self.session.develop_of(photo)?;
+         if d.crop != lightcraft_develop::Crop::default() {
 @@ -1471,12 +1474,16 @@ impl LightcraftApp {
          }
          // Order matters: earlier panels take the full edge (top bar spans the window; the tool strip,

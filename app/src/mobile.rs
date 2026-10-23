@@ -71,12 +71,23 @@ pub fn install(app: &mut LightcraftApp) {
     app.ui.filmstrip = false;
 }
 
-/// Opens an edit tab, for the snapshots: `light`, `color`, `effects`, `detail`, `optics`.
-pub fn open_edit_tab(ctx: &egui::Context, tab: &str) {
+/// Opens a tool sheet, for the snapshots: an edit tab (`light`, `color`, `effects`, `detail`, `optics`),
+/// `crop` (aspect tab), `crop-geometry`, or `presets`.
+pub fn open_edit_tab(ctx: &egui::Context, name: &str) {
     let key = Id::new("lightcraft-mobile");
     let mut st: State = ctx.data(|d| d.get_temp(key)).unwrap_or_default();
-    st.tool = Tool::Edit;
-    st.tab = Tab::ALL.into_iter().find(|t| t.label().eq_ignore_ascii_case(tab)).unwrap_or(Tab::Light);
+    st.browser = None;
+    match name {
+        "crop" | "crop-geometry" => {
+            st.tool = Tool::Crop;
+            st.crop.tab = if name == "crop" { crate::crop::CropTab::Aspect } else { crate::crop::CropTab::Geometry };
+        }
+        "presets" => st.tool = Tool::Presets,
+        _ => {
+            st.tool = Tool::Edit;
+            st.tab = Tab::ALL.into_iter().find(|t| t.label().eq_ignore_ascii_case(name)).unwrap_or(Tab::Light);
+        }
+    }
     ctx.data_mut(|d| d.insert_temp(key, st));
 }
 
@@ -132,6 +143,8 @@ struct State {
     grid_active: Option<PhotoId>,
     /// The file browser of Add photos, while it is open.
     browser: Option<Browser>,
+    /// The Crop sheet (open tab).
+    crop: crate::crop::CropState,
 }
 
 /// The whole screen: picks the file browser, the library grid (or welcome screen) or the edit screen,
@@ -374,7 +387,7 @@ fn edit_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, wide:
         Tool::Masking => RightPanel::Masking,
         _ => RightPanel::Edit,
     };
-    tool_bar(app, ui, st, insets.bottom);
+    tool_bar(ui, st, insets.bottom);
     if st.tool != Tool::None {
         if wide {
             // Wide screens: the tool sheet is a panel on the right, with the tabs on top of it.
@@ -402,26 +415,25 @@ fn edit_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, wide:
     });
 }
 
-/// The bottom tool bar. Auto applies automatic settings at once; the other buttons open or close their tool sheet.
-fn tool_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, inset_bottom: f32) {
+/// The bottom tool bar: one button per tool; a tap opens or closes the tool sheet.
+fn tool_bar(ui: &mut egui::Ui, st: &mut State, inset_bottom: f32) {
     let t = Tokens::get(ui.ctx());
     // The tool bar is always visible at the bottom, above the navigation bar inset.
     egui::Panel::bottom("m_tools").exact_size(TOOLBAR_H + inset_bottom).frame(Frame::NONE.fill(t.chrome).stroke(Stroke::new(1.0, t.divider))).show(ui, |ui| {
         let w = ui.available_width();
-        let tools: [(Option<Tool>, Icon, &str); 6] = [
-            (None, Icon::Edited, "Auto"),
-            (Some(Tool::Presets), Icon::Presets, "Presets"),
-            (Some(Tool::Crop), Icon::Crop, "Crop"),
-            (Some(Tool::Edit), Icon::Sliders, "Edit"),
-            (Some(Tool::Masking), Icon::Mask, "Masking"),
-            (Some(Tool::Remove), Icon::Eraser, "Remove"),
+        let tools: [(Tool, Icon, &str); 5] = [
+            (Tool::Presets, Icon::Presets, "Presets"),
+            (Tool::Crop, Icon::Crop, "Crop"),
+            (Tool::Edit, Icon::Sliders, "Edit"),
+            (Tool::Masking, Icon::Mask, "Masking"),
+            (Tool::Remove, Icon::Eraser, "Remove"),
         ];
         let cell = w / tools.len() as f32;
         let (row, _) = ui.allocate_exact_size(vec2(w, TOOLBAR_H), Sense::hover());
         for (i, (tool, icon, label)) in tools.into_iter().enumerate() {
             let r = egui::Rect::from_min_size(row.min + vec2(cell * i as f32, 0.0), vec2(cell, TOOLBAR_H));
             let resp = ui.interact(r, Id::new(("m_tool", i)), Sense::click());
-            let active = tool.is_some_and(|x| x == st.tool);
+            let active = tool == st.tool;
             if active {
                 let pill = egui::Rect::from_center_size(r.center() - vec2(0.0, 9.0), vec2(52.0, 32.0));
                 ui.painter().rect_filled(pill, 16.0, t.accent);
@@ -435,14 +447,9 @@ fn tool_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, inset_bo
                 egui::FontId::proportional(11.5),
                 if active { t.text } else { t.text_dim },
             );
+            // a tap opens the tool's sheet; a second tap closes it
             if resp.clicked() {
-                match tool {
-                    None => {
-                        let _ = app.run("develop.auto", json!({}));
-                        app.toast(ui.ctx(), "Auto settings applied");
-                    }
-                    Some(x) => st.tool = if st.tool == x { Tool::None } else { x },
-                }
+                st.tool = if st.tool == tool { Tool::None } else { tool };
             }
         }
     });
@@ -483,12 +490,15 @@ fn sheet(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State) {
         Tool::None => {}
         Tool::Edit => edit_sliders(app, ui, st.tab),
         Tool::Presets => panels::presets::show(app, ui),
-        Tool::Crop | Tool::Masking | Tool::Remove => panels::right::show(app, ui),
+        Tool::Crop => crate::crop::sheet(app, ui, &mut st.crop),
+        Tool::Masking | Tool::Remove => panels::right::show(app, ui),
     }
 }
 
 /// The sliders of the Light tab (control ids of the engine).
 const LIGHT: &[&str] = &["light.exposure", "light.contrast", "light.highlights", "light.shadows", "light.whites", "light.blacks"];
+/// The parametric tone curve sliders (under "Tone curve" in the Light tab).
+const CURVE: &[&str] = &["curve.highlights", "curve.lights", "curve.darks", "curve.shadows"];
 /// The sliders of the Effects tab: texture, clarity, dehaze, vignette and grain.
 const EFFECTS: &[&str] = &[
     "effects.texture",
@@ -591,14 +601,45 @@ fn edit_sliders(app: &mut LightcraftApp, ui: &mut egui::Ui, tab: Tab) {
         ui.spacing_mut().item_spacing.y = 0.0;
         ui.add_space(6.0);
         match tab {
-            Tab::Light => list(app, ui, &d, LIGHT),
+            Tab::Light => {
+                // Auto sets exposure, contrast, highlights, shadows, whites and blacks from the photo.
+                tab_actions(ui, |ui| {
+                    if widgets::text_button(ui, "m_light_auto", "Auto", false).clicked() {
+                        let _ = app.run("develop.auto", json!({}));
+                        app.toast(ui.ctx(), "Auto light applied");
+                    }
+                    if widgets::text_button(ui, "m_light_reset", "Reset", false).clicked() {
+                        let _ = app.run("develop.resetSection", json!({"section": "light"}));
+                    }
+                });
+                list(app, ui, &d, LIGHT);
+                // The parametric tone curve: four sliders that bend the curve in its highlight, light,
+                // dark and shadow regions.
+                egui::CollapsingHeader::new(RichText::new("Tone curve").size(14.0)).default_open(false).show(ui, |ui| {
+                    list(app, ui, &d, CURVE);
+                });
+            }
             Tab::Color => {
-                ui.horizontal(|ui| {
-                    ui.add_space(24.0);
+                // White balance: a preset list, an automatic button and the black & white switch.
+                tab_actions(ui, |ui| {
+                    egui::ComboBox::from_id_salt("m_wb_mode").selected_text(d.wb.mode.label()).width(140.0).show_ui(ui, |ui| {
+                        for mode in WbMode::ALL {
+                            if mode == WbMode::Custom {
+                                continue;
+                            }
+                            if ui.selectable_label(d.wb.mode == mode, mode.label()).clicked() {
+                                let _ = app.run("develop.wb", json!({"mode": serde_json::to_value(mode).unwrap_or_default()}));
+                            }
+                        }
+                    });
+                    // Auto white balance: the engine estimates the neutral point of the photo.
+                    if widgets::text_button(ui, "m_wb_auto", "Auto", d.wb.mode == WbMode::Auto).clicked() {
+                        let _ = app.run("develop.wb", json!({"mode": "auto"}));
+                        app.toast(ui.ctx(), "Auto white balance applied");
+                    }
                     if widgets::text_button(ui, "m_bw", "B&W", lightcraft_ui_egui::is_bw(&d)).clicked() {
                         let _ = app.run("develop.treatment", json!({}));
                     }
-                    ui.label(RichText::new(format!("White balance: {}", d.wb.mode.label())).color(t.text_dim));
                 });
                 ui.add_space(6.0);
                 if raw {
@@ -617,6 +658,16 @@ fn edit_sliders(app: &mut LightcraftApp, ui: &mut egui::Ui, tab: Tab) {
         }
         ui.add_space(12.0);
     });
+}
+
+/// A row of buttons at the top of an edit tab (Auto, Reset, white balance preset...).
+fn tab_actions(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        ui.add_space(24.0);
+        ui.spacing_mut().item_spacing.x = 8.0;
+        add(ui);
+    });
+    ui.add_space(8.0);
 }
 
 /// Draws one slider per control id.

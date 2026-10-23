@@ -74,7 +74,7 @@ fn main() {
         println!("catalog {before} -> {}", host.app.session.catalog.len());
         save(&host.snapshot(Duration::from_secs(5)), &out.join(format!("{name}-after-import.png")));
         let _ = host.app.run("view.detail", json!({}));
-        for tab in ["light", "color"] {
+        for tab in ["light", "color", "effects", "detail", "optics", "crop", "crop-geometry"] {
             lightcraft_android::mobile::open_edit_tab(&host.view.ctx, tab);
             host.settle(Duration::from_secs(5));
             save(&host.snapshot(Duration::from_secs(5)), &out.join(format!("{name}-edit-{tab}.png")));
