@@ -28,6 +28,9 @@ fn main() {
     if let Some(id) = ids.first() {
         let _ = host.app.run("library.select", json!({"ids": [id.0], "active": id.0}));
         let _ = host.app.run("view.detail", json!({}));
+        if std::env::var_os("AUTO").is_some() {
+            println!("auto: {:?}", host.app.run("develop.auto", json!({})).map(|_| ()));
+        }
         host.settle(Duration::from_secs(60));
         let img = host.snapshot(Duration::from_secs(30));
         let [w, h] = img.size;
