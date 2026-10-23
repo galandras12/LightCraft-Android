@@ -6,3 +6,8 @@ pub mod mobile;
 
 #[cfg(target_os = "android")]
 mod android;
+
+/// Whether this build opens HEIC / HEIF photos.
+pub fn heic_supported() -> bool {
+    lightcraft_codecs::Format::Heif.can_decode()
+}

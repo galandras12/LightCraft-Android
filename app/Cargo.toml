@@ -15,6 +15,8 @@ crate-type = ["cdylib", "rlib"]
 lightcraft-engine = { path = "../third_party/lightcraft/crates/engine" }
 lightcraft-ui-egui = { path = "../third_party/lightcraft/crates/ui-egui" }
 lightcraft-develop = { path = "../third_party/lightcraft/crates/develop" }
+# HEIC/HEIF (iPhone, Samsung) is decoded in pure Rust; the feature is off in the desktop build.
+lightcraft-codecs = { path = "../third_party/lightcraft/crates/codecs", features = ["heif"] }
 lightcraft-catalog = { path = "../third_party/lightcraft/crates/catalog" }
 egui = "0.36"
 serde_json = "1"
@@ -27,4 +29,5 @@ android_logger = "0.15"
 jni = "0.21"
 
 [dev-dependencies]
+lightcraft-heif = { path = "../third_party/lightcraft/crates/heif", features = ["testdata"] }
 image = { version = "0.25", default-features = false, features = ["png"] }

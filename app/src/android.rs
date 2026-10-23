@@ -114,6 +114,7 @@ impl eframe::App for App {
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
     android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info).with_tag("LightCraft"));
+    log::info!("HEIC/HEIF support: {}", crate::heic_supported());
     let _ = APP.set(app.clone());
     crate::mobile::set_platform(crate::mobile::Platform {
         insets_px,

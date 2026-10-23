@@ -26,6 +26,10 @@ fn main() {
         let img = image::RgbImage::from_fn(240, 160, |x, y| image::Rgb([(x as u8).wrapping_add(i * 50), y as u8, 128 + i * 20]));
         img.save(photos.join("DCIM").join(format!("IMG_{i:04}.jpg"))).expect("jpg");
     }
+    let sample = |x: u32, y: u32| [((x * 7 + y * 13) % 200 + 30) as u16, 110, 150];
+    let heic = lightcraft_heif::testdata::build(&lightcraft_heif::testdata::Spec::new(96, 64, &sample));
+    std::fs::write(photos.join("DCIM").join("IMG_HEIC.HEIC"), heic).expect("heic");
+    println!("heic supported: {}", lightcraft_android::heic_supported());
     std::fs::create_dir_all(photos.join("Pictures")).expect("dir");
     lightcraft_android::mobile::set_platform(lightcraft_android::mobile::Platform {
         insets_px: || [0.0, 72.0, 0.0, 48.0],
