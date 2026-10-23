@@ -29,5 +29,6 @@ android_logger = "0.15"
 jni = "0.21"
 
 [dev-dependencies]
+lightcraft-raw = { path = "../third_party/lightcraft/crates/raw" }
 lightcraft-heif = { path = "../third_party/lightcraft/crates/heif", features = ["testdata"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
