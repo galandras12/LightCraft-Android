@@ -1938,6 +1938,7 @@ dependencies = [
  "lightcraft-develop",
  "lightcraft-engine",
  "lightcraft-heif",
+ "lightcraft-raster",
  "lightcraft-raw",
  "lightcraft-ui-egui",
  "log",

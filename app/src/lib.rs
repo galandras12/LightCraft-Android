@@ -4,6 +4,7 @@
 
 /// The phone / tablet layout (library, edit screen, file browser).
 pub mod crop;
+pub mod histogram;
 pub mod mobile;
 /// The welcome screen of an empty library.
 pub mod welcome;

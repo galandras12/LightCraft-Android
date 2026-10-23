@@ -74,6 +74,15 @@ fn main() {
         println!("catalog {before} -> {}", host.app.session.catalog.len());
         save(&host.snapshot(Duration::from_secs(5)), &out.join(format!("{name}-after-import.png")));
         let _ = host.app.run("view.detail", json!({}));
+        // the histogram card in three displays
+        lightcraft_android::mobile::close_sheets(&host.view.ctx);
+        host.app.ui.histogram = true;
+        for mode in ["lum", "rgb", "parade"] {
+            lightcraft_android::mobile::set_histogram_mode(&host.view.ctx, mode);
+            host.settle(Duration::from_secs(5));
+            save(&host.snapshot(Duration::from_secs(5)), &out.join(format!("{name}-histogram-{mode}.png")));
+        }
+        host.app.ui.histogram = false;
         for tab in ["light", "color", "effects", "detail", "optics", "crop", "crop-geometry"] {
             lightcraft_android::mobile::open_edit_tab(&host.view.ctx, tab);
             host.settle(Duration::from_secs(5));

@@ -22,6 +22,8 @@ lightcraft-develop = { path = "../third_party/lightcraft/crates/develop" }
 # HEIC/HEIF (iPhone, Samsung) is decoded in pure Rust; the feature is off in the desktop build.
 lightcraft-codecs = { path = "../third_party/lightcraft/crates/codecs", features = ["heif"] }
 # The photo catalogue (photo ids).
+# The histogram type shown by the histogram card.
+lightcraft-raster = { path = "../third_party/lightcraft/crates/raster" }
 lightcraft-catalog = { path = "../third_party/lightcraft/crates/catalog" }
 # The UI toolkit; the version must match the one the upstream UI uses.
 egui = "0.36"

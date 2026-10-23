@@ -10,7 +10,7 @@
 //!   Remove), the Edit tab row (Light, Color, Effects, Detail, Optics) and the sliders sheet.
 //! * Edit, wide (tablet / landscape): the tool sheet moves to a panel on the right.
 
-use egui::{Align, Color32, Frame, Id, Layout, Margin, RichText, Sense, Stroke, vec2};
+use egui::{Align, Color32, Frame, Id, Layout, Margin, Rect, RichText, Sense, Stroke, vec2};
 use lightcraft_catalog::PhotoId;
 use lightcraft_develop::{ControlSpec, Section, Track, WbMode};
 use lightcraft_ui_egui::LightcraftApp;
@@ -69,6 +69,31 @@ fn platform() -> &'static Platform {
 pub fn install(app: &mut LightcraftApp) {
     app.mobile_layout = Some(layout);
     app.ui.filmstrip = false;
+}
+
+/// Closes the file browser and the tool sheet, for the snapshots.
+pub fn close_sheets(ctx: &egui::Context) {
+    let key = Id::new("lightcraft-mobile");
+    let mut st: State = ctx.data(|d| d.get_temp(key)).unwrap_or_default();
+    st.browser = None;
+    st.tool = Tool::None;
+    ctx.data_mut(|d| d.insert_temp(key, st));
+}
+
+/// Chooses the histogram display, for the snapshots: `lum`, `rgb`, `r`, `g`, `b` or `parade`.
+pub fn set_histogram_mode(ctx: &egui::Context, name: &str) {
+    use crate::histogram::HistMode;
+    let key = Id::new("lightcraft-mobile");
+    let mut st: State = ctx.data(|d| d.get_temp(key)).unwrap_or_default();
+    st.hist.mode = match name {
+        "rgb" => HistMode::Rgb,
+        "r" => HistMode::Red,
+        "g" => HistMode::Green,
+        "b" => HistMode::Blue,
+        "parade" => HistMode::Parade,
+        _ => HistMode::Luminosity,
+    };
+    ctx.data_mut(|d| d.insert_temp(key, st));
 }
 
 /// Opens a tool sheet, for the snapshots: an edit tab (`light`, `color`, `effects`, `detail`, `optics`),
@@ -145,6 +170,8 @@ struct State {
     browser: Option<Browser>,
     /// The Crop sheet (open tab).
     crop: crate::crop::CropState,
+    /// The histogram card (chosen display).
+    hist: crate::histogram::HistState,
 }
 
 /// The whole screen: picks the file browser, the library grid (or welcome screen) or the edit screen,
@@ -195,6 +222,23 @@ struct Insets {
     bottom: f32,
 }
 
+/// The histogram button of the top bar: five bars of different heights, highlighted while the
+/// histogram card is shown. Drawn here because the upstream icon set has no histogram icon.
+fn histogram_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
+    let t = Tokens::get(ui.ctx());
+    let (rect, response) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::click());
+    if active {
+        ui.painter().rect_filled(Rect::from_center_size(rect.center(), vec2(32.0, 32.0)), 4.0, t.tool_active);
+    }
+    let color = if active { t.text } else { t.icon };
+    for (i, height) in [0.35f32, 0.65, 1.0, 0.7, 0.4].into_iter().enumerate() {
+        let x = rect.center().x - 10.0 + i as f32 * 5.0;
+        let bar = Rect::from_min_max(egui::pos2(x - 1.6, rect.center().y + 9.0 - 18.0 * height), egui::pos2(x + 1.6, rect.center().y + 9.0));
+        ui.painter().rect_filled(bar, 1.0, color);
+    }
+    response
+}
+
 /// A 44 x 44 point icon button of the top bar.
 fn icon_btn(ui: &mut egui::Ui, id: &str, icon: Icon, active: bool, enabled: bool, tip: &str) -> egui::Response {
     widgets::icon_button(ui, id, icon, vec2(44.0, 44.0), active, enabled, tip)
@@ -240,6 +284,11 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
                     let can_undo = !app.session.undo.is_empty();
                     if widgets::text_button(ui, "m_undo", "Undo", false).clicked() && can_undo {
                         let _ = app.run("edit.undo", json!({}));
+                    }
+                    // Histogram: shows or hides the histogram card over the photo (its chips switch the display).
+                    let shown = app.ui.histogram;
+                    if histogram_button(ui, shown).clicked() {
+                        app.ui.histogram = !shown;
                     }
                 });
             } else {
@@ -411,7 +460,12 @@ fn edit_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, wide:
     }
     // The photo itself (the upstream loupe: pinch / scroll to zoom, drag to pan).
     egui::CentralPanel::default().frame(Frame::NONE.fill(t.canvas)).show(ui, |ui| {
+        let area = ui.max_rect();
         panels::detail::show(app, ui);
+        // The histogram card floats over the photo's top left corner while it is switched on.
+        if app.ui.histogram {
+            crate::histogram::show(ui.ctx(), app, area, &mut st.hist);
+        }
     });
 }
 
