@@ -4,17 +4,26 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
-description = "Android host for LightCraft (egui + wgpu over NativeActivity)"
+description = "Android host for LightCraft (egui + wgpu over NativeActivity) with a phone/tablet layout"
 
 [lib]
 name = "lightcraft_android"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
+# The upstream checkout is made (and patched) by scripts/fetch-upstream.sh.
 [dependencies]
-lightcraft-engine = { git = "https://github.com/storytold/lightcraft", rev = "1c03b7b18f3a8219b034ad384477bf2f8d767585" }
-lightcraft-ui-egui = { git = "https://github.com/storytold/lightcraft", rev = "1c03b7b18f3a8219b034ad384477bf2f8d767585" }
-eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "android-native-activity"] }
+lightcraft-engine = { path = "../third_party/lightcraft/crates/engine" }
+lightcraft-ui-egui = { path = "../third_party/lightcraft/crates/ui-egui" }
+lightcraft-develop = { path = "../third_party/lightcraft/crates/develop" }
+lightcraft-catalog = { path = "../third_party/lightcraft/crates/catalog" }
 egui = "0.36"
-android-activity = { version = "0.6", features = ["native-activity"] }
+serde_json = "1"
 log = "0.4"
+
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "android-native-activity"] }
+android-activity = { version = "0.6", features = ["native-activity"] }
 android_logger = "0.15"
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }

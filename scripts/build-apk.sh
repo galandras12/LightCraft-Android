@@ -10,6 +10,7 @@ BT="$ANDROID_SDK_ROOT/build-tools/34.0.0"
 JAR="$ANDROID_SDK_ROOT/platforms/android-34/android.jar"
 OUT=Debug/lightcraft-debug-unsigned.apk
 WORK=target/apk
+./scripts/fetch-upstream.sh
 cargo ndk -t arm64-v8a --platform 29 -o jniLibs build --release
 rm -rf "$WORK" && mkdir -p "$WORK/lib/arm64-v8a"
 cp jniLibs/arm64-v8a/liblightcraft_android.so "$WORK/lib/arm64-v8a/"

@@ -1,0 +1,57 @@
+diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
+index 1b25179..d4c3d32 100644
+--- a/crates/ui-egui/src/lib.rs
++++ b/crates/ui-egui/src/lib.rs
+@@ -355,6 +355,8 @@ pub struct LightcraftApp {
+     pub perf: Perf,
+     /// macOS: the host draws the traffic lights over our top bar.
+     pub integrated_titlebar: bool,
++    /// Android patch: replaces the desktop layout (top bar, tool strip, docked panels) with the host's own.
++    pub mobile_layout: Option<fn(&mut LightcraftApp, &mut egui::Ui)>,
+     /// The host installed a native menu bar (no in-window menus then).
+     pub native_menu: bool,
+     /// Shortcuts the native menu bar currently handles (`Cmd+Z`, `G`…): the egui shortcut handler
+@@ -499,6 +501,7 @@ impl LightcraftApp {
+             perf: Perf::default(),
+             caches: Caches::default(),
+             integrated_titlebar: false,
++            mobile_layout: None,
+             native_menu: false,
+             native_shortcuts: Default::default(),
+             recording_shortcut: None,
+@@ -1471,12 +1474,16 @@ impl LightcraftApp {
+         }
+         // Order matters: earlier panels take the full edge (top bar spans the window; the tool strip,
+         // right panels and left panel run to the bottom; the bottom bar sits between them).
+-        panels::topbar::show(self, ui);
+-        panels::library_problem::banner(self, ui);
+-        panels::strip::show(self, ui);
+-        // filled: the gaps the dock leaves between its panes show chrome, not the dark clear colour
+-        let chrome = theme::Tokens::get(&ctx).chrome;
+-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(chrome)).show(ui, |ui| docking::show(self, ui));
++        if let Some(layout) = self.mobile_layout {
++            layout(self, ui);
++        } else {
++            panels::topbar::show(self, ui);
++            panels::library_problem::banner(self, ui);
++            panels::strip::show(self, ui);
++            // filled: the gaps the dock leaves between its panes show chrome, not the dark clear colour
++            let chrome = theme::Tokens::get(&ctx).chrome;
++            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(chrome)).show(ui, |ui| docking::show(self, ui));
++        }
+         self.lights_out(&ctx);
+         panels::second::show(self, &ctx);
+         panels::notices::show(self, &ctx);
+diff --git a/crates/ui-egui/src/panels/edit.rs b/crates/ui-egui/src/panels/edit.rs
+index 08f70bd..c107c73 100644
+--- a/crates/ui-egui/src/panels/edit.rs
++++ b/crates/ui-egui/src/panels/edit.rs
+@@ -36,7 +36,7 @@ pub fn apply_slider_out(
+     }
+ }
+ 
+-pub(crate) fn control(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings, id: &str, enabled: bool) {
++pub fn control(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings, id: &str, enabled: bool) {
+     let Some(spec) = controls::find(id) else { return };
+     let v = controls::get(d, id).unwrap_or(spec.default);
+     let out = slider(ui, spec, v, enabled, None);

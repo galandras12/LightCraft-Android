@@ -38,3 +38,4 @@ google-services.json
 /target/
 /jniLibs/
 !/Debug/*.apk
+/third_party/
