@@ -19,3 +19,9 @@ mkdir -p Debug
 rm -f "$OUT"
 "$BT/zipalign" -p -f 4 "$WORK/base.apk" "$OUT"
 "$BT/zipalign" -c -p 4 "$OUT" && echo "OK: $OUT ($(du -h "$OUT" | cut -f1), unsigned)"
+
+# Installable copy, signed with the throwaway debug key (Debug/debug.keystore, password "android").
+"$BT/apksigner" sign --ks Debug/debug.keystore --ks-pass pass:android --key-pass pass:android \
+  --ks-key-alias androiddebugkey --out Debug/lightcraft-debug.apk "$OUT"
+rm -f Debug/lightcraft-debug.apk.idsig
+echo "OK: Debug/lightcraft-debug.apk (debug-signed, installable)"

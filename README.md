@@ -8,12 +8,10 @@ Compiles and links for `arm64-v8a`. Not yet run on a device. Still missing: Stor
 touch / responsive layout, memory tuning for large raw files.
 
 ## Test build
-`Debug/lightcraft-debug-unsigned.apk` — debuggable, **unsigned** (arm64-v8a, Android 10+). An unsigned APK
-does not install as-is: sign it first, e.g.
-
-    apksigner sign --ks my.keystore Debug/lightcraft-debug-unsigned.apk
-
-(or use a throwaway key from `keytool -genkeypair`).
+- `Debug/lightcraft-debug.apk` — **install this one**: debuggable, signed with the throwaway debug key
+  (`Debug/debug.keystore`, password `android`; not a release key). arm64-v8a, Android 10+.
+  Allow "install unknown apps" for your file manager/browser, or `adb install Debug/lightcraft-debug.apk`.
+- `Debug/lightcraft-debug-unsigned.apk` — the same build without a signature (Android refuses to install it).
 
 ## Rebuild
 `ANDROID_NDK_HOME=… ANDROID_SDK_ROOT=… ./scripts/build-apk.sh`
