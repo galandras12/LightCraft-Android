@@ -71,6 +71,15 @@ pub fn install(app: &mut LightcraftApp) {
     app.ui.filmstrip = false;
 }
 
+/// Switches the selection mode of the library on or off, for the snapshots.
+pub fn set_select_mode(ctx: &egui::Context, on: bool) {
+    let key = Id::new("lightcraft-mobile");
+    let mut st: State = ctx.data(|d| d.get_temp(key)).unwrap_or_default();
+    st.browser = None;
+    st.select_mode = on;
+    ctx.data_mut(|d| d.insert_temp(key, st));
+}
+
 /// Closes the file browser and the tool sheet, for the snapshots.
 pub fn close_sheets(ctx: &egui::Context) {
     let key = Id::new("lightcraft-mobile");
@@ -172,6 +181,8 @@ struct State {
     crop: crate::crop::CropState,
     /// The histogram card (chosen display).
     hist: crate::histogram::HistState,
+    /// Selection mode of the library: a tap on a photo ticks it (as Ctrl+click does on a desktop) instead of opening it.
+    select_mode: bool,
 }
 
 /// The whole screen: picks the file browser, the library grid (or welcome screen) or the edit screen,
@@ -291,6 +302,13 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
                         app.ui.histogram = !shown;
                     }
                 });
+            } else if st.select_mode {
+                // Selection mode: a cancel button and how many photos are ticked (the actions are at the bottom).
+                if icon_btn(ui, "m_sel_cancel", Icon::Close, false, true, "Cancel selection").clicked() {
+                    st.select_mode = false;
+                }
+                let n = app.session.selection.ids.len();
+                ui.label(RichText::new(format!("{n} selected")).size(17.0).strong().color(t.text));
             } else {
                 ui.add_space(10.0);
                 // Number of photos shown under the title.
@@ -308,6 +326,10 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
                     // "+" opens the file browser to add photos.
                     if icon_btn(ui, "m_import", Icon::Plus, false, true, "Add photos").clicked() {
                         st.browser = Some(Browser::open(&start_dir(), Purpose::Photos));
+                    }
+                    // "Select" starts the selection mode: several photos can be ticked, for example to delete them.
+                    if widgets::text_button(ui, "m_select", "Select", false).clicked() {
+                        st.select_mode = true;
                     }
                 });
             }
@@ -384,7 +406,9 @@ fn grid_menu(app: &mut LightcraftApp, ui: &mut egui::Ui) {
 /// A tap on a photo opens it in the edit screen.
 fn grid_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, insets: Insets) {
     let t = Tokens::get(ui.ctx());
-    if insets.bottom > 0.5 {
+    if st.select_mode {
+        selection_bar(app, ui, st, insets.bottom);
+    } else if insets.bottom > 0.5 {
         // Keeps the grid above the navigation bar.
         egui::Panel::bottom("m_nav_pad").exact_size(insets.bottom).frame(Frame::NONE.fill(t.grid_bg)).show(ui, |_| {});
     }
@@ -412,13 +436,66 @@ fn grid_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, inset
     let released = ui.input(|i| i.pointer.any_released() && !i.pointer.is_decidedly_dragging());
     let pos = ui.input(|i| i.pointer.interact_pos());
     let after = app.session.active();
-    if released && pos.is_some_and(|p| rect.inner.contains(p)) && after.is_some() && (after != before || after != st.grid_active) {
+    // (not in selection mode, where a tap only ticks the photo)
+    if st.select_mode && app.ui.view == ViewMode::Detail {
+        // a quick double tap asks the grid to open the photo: stay in the library
+        let _ = app.run("view.photoGrid", json!({}));
+    }
+    if !st.select_mode && released && pos.is_some_and(|p| rect.inner.contains(p)) && after.is_some() && (after != before || after != st.grid_active) {
         let moved = ui.input(|i| i.pointer.press_origin().zip(i.pointer.interact_pos()).is_some_and(|(a, b)| a.distance(b) > 12.0));
         if !moved && app.ui.view != ViewMode::Detail && after != st.grid_active {
             let _ = app.run("view.detail", json!({}));
         }
     }
     st.grid_active = after;
+}
+
+/// The bar at the bottom of the selection mode: Select all (or none) and Delete.
+fn selection_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, inset_bottom: f32) {
+    let t = Tokens::get(ui.ctx());
+    egui::Panel::bottom("m_sel_bar").exact_size(TOOLBAR_H + inset_bottom).frame(Frame::NONE.fill(t.chrome).stroke(Stroke::new(1.0, t.divider))).show(ui, |ui| {
+        let n = app.session.selection.ids.len();
+        let total = app.session.visible_shared().1.len();
+        ui.horizontal_centered(|ui| {
+            ui.add_space(16.0);
+            ui.spacing_mut().item_spacing.x = 10.0;
+            // Select all, or none when everything is ticked already.
+            let all = n > 0 && n >= total;
+            if ui.add(egui::Button::new(if all { "Select none" } else { "Select all" }).min_size(vec2(120.0, 44.0))).clicked() {
+                let _ = app.run(if all { "library.selectNone" } else { "library.selectAll" }, json!({}));
+            }
+            // Delete: moves the ticked photos to Recently Deleted (the files on the device are not touched).
+            let delete = egui::Button::new(RichText::new(format!("Delete {n}")).size(16.0).color(Color32::WHITE)).fill(t.reject).min_size(vec2(ui.available_width() - 16.0, 44.0));
+            if ui.add_enabled(n > 0, delete).clicked() {
+                let _ = app.run("photo.delete", json!({}));
+                app.toast(ui.ctx(), format!("Moved {n} photo{} to Recently Deleted", if n == 1 { "" } else { "s" }));
+                st.select_mode = false;
+            }
+        });
+    });
+}
+
+/// Called by the host for every frame's raw input. In selection mode every pointer press counts as made with
+/// Ctrl held, which the upstream grid reads as "add this photo to the selection".
+pub fn input_hook(ctx: &egui::Context, raw: &mut egui::RawInput) {
+    let st: State = ctx.data(|d| d.get_temp(Id::new("lightcraft-mobile"))).unwrap_or_default();
+    let on = st.select_mode;
+    // egui keeps the modifiers it was last told about, so the change is announced once, when the mode switches
+    let flag = Id::new("lightcraft-select-modifiers");
+    let was: bool = ctx.data(|d| d.get_temp(flag)).unwrap_or(false);
+    if on != was {
+        let modifiers = if on { egui::Modifiers { ctrl: true, command: true, ..Default::default() } } else { egui::Modifiers::default() };
+        raw.events.insert(0, egui::Event::ModifiersChanged(modifiers));
+        ctx.data_mut(|d| d.insert_temp(flag, on));
+    }
+    if on {
+        for event in raw.events.iter_mut() {
+            if let egui::Event::PointerButton { modifiers, .. } = event {
+                modifiers.ctrl = true;
+                modifiers.command = true;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -866,6 +943,8 @@ impl Purpose {
 struct Browser {
     /// What the chosen files are used for.
     purpose: Purpose,
+    /// Photos are shown as a grid of thumbnails (else as a list with a small thumbnail).
+    grid: bool,
     dir: std::path::PathBuf,
     entries: Vec<Entry>,
     selected: std::collections::BTreeSet<std::path::PathBuf>,
@@ -895,7 +974,7 @@ fn is_photo(name: &str) -> bool {
 /// Reading and navigating the folder of the file browser.
 impl Browser {
     fn open(dir: &std::path::Path, purpose: Purpose) -> Browser {
-        let mut b = Browser { purpose, dir: dir.to_path_buf(), entries: vec![], selected: Default::default(), error: None };
+        let mut b = Browser { purpose, grid: purpose == Purpose::Photos, dir: dir.to_path_buf(), entries: vec![], selected: Default::default(), error: None };
         b.read();
         b
     }
@@ -966,6 +1045,10 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
                 ui.add(egui::Label::new(RichText::new(name).size(16.0).color(t.text)).truncate());
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // Thumbnails as a grid or as a list.
+                if b.purpose == Purpose::Photos && access && widgets::text_button(ui, "m_b_view", if b.grid { "List" } else { "Grid" }, false).clicked() {
+                    b.grid = !b.grid;
+                }
                 // "Select all" selects every photo of the folder, or clears the selection when all are selected.
                 if access && b.files().next().is_some() && widgets::text_button(ui, "m_b_all", "Select all", false).clicked() {
                     let all: Vec<_> = b.files().map(|e| e.path.clone()).collect();
@@ -1034,45 +1117,35 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
         }
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            for (i, e) in b.entries.clone().iter().enumerate() {
-                // One row: icon, name, size or chevron; a tap opens a folder or ticks a photo.
+            let entries = b.entries.clone();
+            // The folders: one row each; a tap opens the folder.
+            for e in entries.iter().filter(|e| e.dir) {
                 let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 60.0), Sense::click());
-                let chosen = b.selected.contains(&e.path);
-                if chosen {
-                    ui.painter().rect_filled(row, 0.0, t.hover);
-                }
-                let icon_rect = egui::Rect::from_center_size(egui::pos2(row.left() + 32.0, row.center().y), vec2(24.0, 24.0));
-                paint(ui.painter(), icon_rect, if e.dir { Icon::Folder } else if b.purpose == Purpose::Photos { Icon::Photos } else { Icon::Tag }, t.icon);
-                ui.painter().text(
-                    egui::pos2(row.left() + 64.0, row.center().y - if e.dir { 0.0 } else { 9.0 }),
-                    egui::Align2::LEFT_CENTER,
-                    &e.name,
-                    egui::FontId::proportional(15.0),
-                    t.text,
-                );
-                if !e.dir {
-                    ui.painter().text(egui::pos2(row.left() + 64.0, row.center().y + 11.0), egui::Align2::LEFT_CENTER, size_text(e.size), egui::FontId::proportional(12.0), t.text_dim);
-                }
-                if chosen {
-                    paint(ui.painter(), egui::Rect::from_center_size(egui::pos2(row.right() - 32.0, row.center().y), vec2(22.0, 22.0)), Icon::Check, t.accent);
-                } else if e.dir {
-                    paint(ui.painter(), egui::Rect::from_center_size(egui::pos2(row.right() - 32.0, row.center().y), vec2(18.0, 18.0)), Icon::ChevronRight, t.text_dim);
-                }
+                paint(ui.painter(), egui::Rect::from_center_size(egui::pos2(row.left() + 32.0, row.center().y), vec2(24.0, 24.0)), Icon::Folder, t.icon);
+                ui.painter().text(egui::pos2(row.left() + 64.0, row.center().y), egui::Align2::LEFT_CENTER, &e.name, egui::FontId::proportional(15.0), t.text);
+                paint(ui.painter(), egui::Rect::from_center_size(egui::pos2(row.right() - 32.0, row.center().y), vec2(18.0, 18.0)), Icon::ChevronRight, t.text_dim);
                 ui.painter().line_segment([egui::pos2(row.left() + 64.0, row.bottom()), row.right_bottom()], Stroke::new(1.0, t.divider));
                 if resp.clicked() {
-                    if e.dir {
-                        go = Some(e.path.clone());
-                    } else if !b.selected.remove(&e.path) {
-                        b.selected.insert(e.path.clone());
-                    }
+                    go = Some(e.path.clone());
                 }
-                let _ = i;
+            }
+            // The files, with thumbnails for photos.
+            let files: Vec<(usize, &Entry)> = entries.iter().enumerate().filter(|(_, e)| !e.dir).collect();
+            if b.grid && b.purpose == Purpose::Photos {
+                browser_grid(app, ui, &mut b, &files);
+            } else {
+                browser_list(app, ui, &mut b, &files);
             }
         });
     });
 
     if let Some(dir) = go {
+        // the thumbnails belong to the folder that is left
+        app.renderer.forget_imports();
         b.go(&dir);
+    }
+    if close || import_started(&b, close) {
+        app.renderer.forget_imports();
     }
     if let Some(paths) = import {
         match b.purpose {
@@ -1106,6 +1179,111 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
     }
     if !close {
         st.browser = Some(b);
+    }
+}
+
+/// Whether the browser is about to close (kept as a function so that the thumbnails are dropped on every way out).
+fn import_started(_b: &Browser, close: bool) -> bool {
+    close
+}
+
+/// The thumbnail of a photo file in the browser: asked for once (a raw's embedded preview, else a small render),
+/// returned when it is ready. `index` is the entry's place in the folder; it picks the render slot.
+fn browser_thumb(app: &mut LightcraftApp, index: usize, e: &Entry) -> Option<(egui::TextureId, [usize; 2])> {
+    use lightcraft_ui_egui::render::Slot;
+    let slot = Slot::Import(index as u32);
+    if !app.renderer.textures.contains_key(&slot) {
+        let ext = e.name.rsplit_once('.').map(|(_, x)| x.to_ascii_lowercase()).unwrap_or_default();
+        const RAW: &[&str] = &["dng", "cr2", "cr3", "crw", "nef", "nrw", "arw", "sr2", "srf", "raf", "orf", "rw2", "rwl", "raw", "pef", "srw", "iiq", "mrw", "x3f", "kdc", "mos", "erf", "3fr", "fff", "mef"];
+        let kind = if RAW.contains(&ext.as_str()) { lightcraft_catalog::MediaKind::Raw } else { lightcraft_catalog::MediaKind::Image };
+        let candidate = lightcraft_engine::import::ImportCandidate {
+            path: e.path.to_string_lossy().into_owned(),
+            name: e.name.clone(),
+            format: ext.to_ascii_uppercase(),
+            kind,
+            width: 1,
+            height: 1,
+            file_size: e.size,
+            ..Default::default()
+        };
+        if let Some(job) = app.session.candidate_thumb_job(&candidate, 192, index as u64) {
+            app.renderer.request_quick(slot, job, 4);
+        }
+    }
+    app.renderer.textures.get(&slot).map(|t| (t.tex.id(), t.size))
+}
+
+/// Draws a thumbnail fitted into `rect` (the picture keeps its shape).
+fn paint_thumb(ui: &egui::Ui, rect: egui::Rect, texture: Option<(egui::TextureId, [usize; 2])>) {
+    ui.painter().rect_filled(rect, 4.0, Color32::from_gray(30));
+    if let Some((id, [w, h])) = texture {
+        let scale = (rect.width() / w.max(1) as f32).min(rect.height() / h.max(1) as f32);
+        let fit = egui::Rect::from_center_size(rect.center(), vec2(w as f32 * scale, h as f32 * scale));
+        ui.painter().image(id, fit, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+    }
+}
+
+/// The files of the folder as rows: a small thumbnail (photos), the name and the size; a tap ticks the file.
+fn browser_list(app: &mut LightcraftApp, ui: &mut egui::Ui, b: &mut Browser, files: &[(usize, &Entry)]) {
+    let t = Tokens::get(ui.ctx());
+    for (index, e) in files {
+        let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 72.0), Sense::click());
+        let chosen = b.selected.contains(&e.path);
+        if chosen {
+            ui.painter().rect_filled(row, 0.0, t.hover);
+        }
+        // the thumbnail is asked for only while the row is on screen
+        let thumb_rect = egui::Rect::from_center_size(egui::pos2(row.left() + 42.0, row.center().y), vec2(56.0, 56.0));
+        if b.purpose == Purpose::Photos {
+            let texture = if ui.is_rect_visible(row) { browser_thumb(app, *index, e) } else { None };
+            paint_thumb(ui, thumb_rect, texture);
+        } else {
+            paint(ui.painter(), egui::Rect::from_center_size(thumb_rect.center(), vec2(24.0, 24.0)), Icon::Tag, t.icon);
+        }
+        ui.painter().text(egui::pos2(row.left() + 84.0, row.center().y - 9.0), egui::Align2::LEFT_CENTER, &e.name, egui::FontId::proportional(15.0), t.text);
+        ui.painter().text(egui::pos2(row.left() + 84.0, row.center().y + 11.0), egui::Align2::LEFT_CENTER, size_text(e.size), egui::FontId::proportional(12.0), t.text_dim);
+        if chosen {
+            paint(ui.painter(), egui::Rect::from_center_size(egui::pos2(row.right() - 32.0, row.center().y), vec2(22.0, 22.0)), Icon::Check, t.accent);
+        }
+        ui.painter().line_segment([egui::pos2(row.left() + 84.0, row.bottom()), row.right_bottom()], Stroke::new(1.0, t.divider));
+        if resp.clicked() && !b.selected.remove(&e.path) {
+            b.selected.insert(e.path.clone());
+        }
+    }
+}
+
+/// The photos of the folder as a grid of square thumbnails; a tap ticks the photo (a check mark and a frame).
+fn browser_grid(app: &mut LightcraftApp, ui: &mut egui::Ui, b: &mut Browser, files: &[(usize, &Entry)]) {
+    let t = Tokens::get(ui.ctx());
+    let width = ui.available_width();
+    let gap = 4.0;
+    let columns = ((width / 130.0).floor() as usize).clamp(3, 8);
+    let cell = (width - gap * (columns as f32 + 1.0)) / columns as f32;
+    let rows = files.len().div_ceil(columns);
+    let (area, _) = ui.allocate_exact_size(vec2(width, gap + rows as f32 * (cell + gap)), Sense::hover());
+    for (k, (index, e)) in files.iter().enumerate() {
+        let (row, column) = (k / columns, k % columns);
+        let rect = egui::Rect::from_min_size(area.min + vec2(gap + column as f32 * (cell + gap), gap + row as f32 * (cell + gap)), vec2(cell, cell));
+        // the thumbnail is asked for only while the cell is on screen
+        if !ui.is_rect_visible(rect) {
+            continue;
+        }
+        let texture = browser_thumb(app, *index, e);
+        paint_thumb(ui, rect, texture);
+        let chosen = b.selected.contains(&e.path);
+        // the file name over the bottom of the cell
+        let band = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 18.0), rect.max);
+        ui.painter().rect_filled(band, 0.0, Color32::from_black_alpha(130));
+        ui.painter().text(band.left_center() + vec2(4.0, 0.0), egui::Align2::LEFT_CENTER, &e.name, egui::FontId::proportional(10.5), Color32::WHITE);
+        if chosen {
+            ui.painter().rect_stroke(rect, 4.0, Stroke::new(3.0, t.accent), egui::StrokeKind::Inside);
+            let badge = egui::Rect::from_center_size(rect.right_top() + vec2(-16.0, 16.0), vec2(24.0, 24.0));
+            ui.painter().circle_filled(badge.center(), 12.0, t.accent);
+            paint(ui.painter(), badge.shrink(5.0), Icon::Check, Color32::WHITE);
+        }
+        if ui.interact(rect, Id::new(("m_b_cell", *index)), Sense::click()).clicked() && !b.selected.remove(&e.path) {
+            b.selected.insert(e.path.clone());
+        }
     }
 }
 

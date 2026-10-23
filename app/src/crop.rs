@@ -123,38 +123,52 @@ fn aspect_tab(app: &mut LightcraftApp, ui: &mut egui::Ui, id: lightcraft_catalog
     let d = app.session.develop_of(id).unwrap_or_default();
     let locked = app.crop_tool_aspect();
 
-    // Free / Original, then the turning and flipping buttons.
+    // The crop ratio: a drop-down list (Free, Original, common ratios, social media formats) and a button
+    // that swaps portrait and landscape.
     heading(ui, "Ratio");
-    wrap(ui, |ui| {
-        if chip(ui, "Free", locked.is_none()) {
-            let _ = app.run("crop.aspect", json!({"aspect": "free"}));
-        }
-        if chip(ui, "Original", false) {
-            let _ = app.run("crop.aspect", json!({"aspect": "original"}));
-        }
-        if chip(ui, "Swap orientation", false) {
+    let original = app.session.catalog.photo(id).map(|p| {
+        let (w, h) = (f64::from(p.width.max(1)), f64::from(p.height.max(1)));
+        if d.orientation.swaps_axes() { h / w } else { w / h }
+    });
+    let mut chosen: Option<serde_json::Value> = None;
+    ui.horizontal(|ui| {
+        ui.add_space(16.0);
+        egui::ComboBox::from_id_salt("m_crop_ratio")
+            .selected_text(ratio_label(locked, original))
+            .width((ui.available_width() - 190.0).max(140.0))
+            .show_ui(ui, |ui| {
+                ui.set_min_width(240.0);
+                egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+                    if ui.selectable_label(locked.is_none(), "Free").clicked() {
+                        chosen = Some(json!("free"));
+                    }
+                    if ui.selectable_label(is_original(locked, original), "Original").clicked() {
+                        chosen = Some(json!("original"));
+                    }
+                    ui.separator();
+                    ui.label(RichText::new("Ratios").size(12.0).color(t.text_dim));
+                    for r in RATIOS {
+                        if ui.selectable_label(is_locked(locked, r), r.name).clicked() {
+                            chosen = Some(json!([r.w, r.h]));
+                        }
+                    }
+                    ui.separator();
+                    ui.label(RichText::new("Social media").size(12.0).color(t.text_dim));
+                    for r in SOCIAL {
+                        if ui.selectable_label(is_locked(locked, r), r.name).clicked() {
+                            chosen = Some(json!([r.w, r.h]));
+                        }
+                    }
+                });
+            });
+        // Swaps portrait and landscape of the chosen ratio.
+        if chip(ui, "Swap", false) {
             let _ = app.run("crop.rotateAspect", json!({}));
         }
     });
-
-    // Common ratios.
-    wrap(ui, |ui| {
-        for r in RATIOS {
-            if chip(ui, r.name, is_locked(locked, r)) {
-                let _ = app.run("crop.aspect", json!({"aspect": [r.w, r.h]}));
-            }
-        }
-    });
-
-    // The formats of social networks.
-    heading(ui, "Social media");
-    wrap(ui, |ui| {
-        for r in SOCIAL {
-            if chip(ui, r.name, is_locked(locked, r)) {
-                let _ = app.run("crop.aspect", json!({"aspect": [r.w, r.h]}));
-            }
-        }
-    });
+    if let Some(aspect) = chosen {
+        let _ = app.run("crop.aspect", json!({"aspect": aspect}));
+    }
 
     // Turning and flipping the photo, and resetting the crop.
     heading(ui, "Rotate and flip");
@@ -236,6 +250,29 @@ fn chip(ui: &mut egui::Ui, label: &str, selected: bool) -> bool {
     let text = RichText::new(label).size(14.0).color(if selected { Color32::WHITE } else { t.text });
     let button = egui::Button::new(text).fill(if selected { t.accent } else { t.button }).min_size(vec2(0.0, 38.0)).sense(Sense::click());
     ui.add(button).clicked()
+}
+
+/// Whether the crop is locked to the photo's own shape (`original`: its width / height).
+fn is_original(locked: Option<(u32, u32)>, original: Option<f64>) -> bool {
+    match (locked, original) {
+        (Some((w, h)), Some(o)) if w > 0 && h > 0 => (f64::from(w) / f64::from(h) - o).abs() < 0.01 * o,
+        _ => false,
+    }
+}
+
+/// What the ratio drop-down says: Free, Original, the name of the ratio in the lists, or the numbers.
+fn ratio_label(locked: Option<(u32, u32)>, original: Option<f64>) -> String {
+    let Some((w, h)) = locked else { return "Free".to_string() };
+    if w == 0 || h == 0 {
+        return "Free".to_string();
+    }
+    if is_original(locked, original) {
+        return "Original".to_string();
+    }
+    if let Some(r) = RATIOS.iter().chain(SOCIAL).find(|r| is_locked(locked, r)) {
+        return r.name.to_string();
+    }
+    format!("{:.2} : 1", f64::from(w) / f64::from(h))
 }
 
 /// Whether the crop is locked to `ratio` (in its own orientation: 2 : 3 is not 3 : 2). `locked` is the crop's width and

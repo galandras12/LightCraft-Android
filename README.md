@@ -14,7 +14,8 @@ phone and tablet interface modelled on Lightroom for Android.
 - **Welcome screen** while the library is empty: a generated nature picture (mountains, a lake, a lavender
   field, clouds) split by a diagonal line, black and white on one side and colour on the other, with a large
   button that opens the file browser. A new library starts without sample photos.
-- **Library**: a photo grid with a top bar. Tap a photo to open it.
+- **Library**: a photo grid with a top bar. Tap a photo to open it. **Select** starts the selection mode: a tap
+  ticks a photo, and the bar at the bottom offers Select all and Delete (to Recently Deleted).
 - **Edit screen**: the photo on top and a tool bar at the bottom (Presets, Crop, Edit, Masking, Remove).
   The Edit tool has the tabs Light, Color, Effects, Detail and Optics. On wide screens (tablet, landscape)
   the tool sheet moves to a panel on the right.
@@ -28,8 +29,8 @@ phone and tablet interface modelled on Lightroom for Android.
   - **Optics**: a lens profile drop-down at the top (None, Automatic, or any lens of the loaded database with
     a filter) and a button that loads lensfun-format XML profile files; below it the lens correction, manual
     distortion, vignetting, defringe and chromatic aberration sliders.
-- **Crop sheet**: aspect ratios (free, original, common print and screen ratios), the picture formats of
-  popular social networks (Instagram, TikTok, Facebook, X, YouTube, LinkedIn, Pinterest, Snapchat), rotate,
+- **Crop sheet**: an aspect ratio drop-down list (free, original, common print and screen ratios, and the picture
+  formats of popular social networks: Instagram, TikTok, Facebook, X, YouTube, LinkedIn, Pinterest, Snapchat), rotate,
   flip, straighten, and a Geometry tab with Upright and the manual transform sliders.
 - **Histogram**: a button in the edit top bar shows a histogram card over the photo. Its chips switch between
   luminosity, RGB (the three channels over each other, to judge the colour balance), each channel alone and a
@@ -37,7 +38,9 @@ phone and tablet interface modelled on Lightroom for Android.
 - **Touch behaviour**: a slider moves only when its thumb is dragged (a tap on the track or a scroll that
   starts on it changes nothing; tap the number to type an exact value). Menus stay open until a tap outside
   them, long menus scroll, and submenus unfold on a tap.
-- **Add photos**: a built-in file browser for the device storage. Tick photos or import a whole folder.
+- **Add photos**: a built-in file browser for the device storage with thumbnails (a grid or a list; a raw
+  file shows its embedded preview), so the photos can be seen before they are imported. Tick photos or import
+  a whole folder.
   Files are referenced where they are; nothing is copied or moved.
 - **Safe areas**: the bars keep clear of the status bar, the navigation bar and display cut-outs.
 - **Formats** (all decoded by the upstream engine): JPEG, PNG, TIFF, WebP, JPEG XL, GIF, BMP, PSD, HEIC/HEIF

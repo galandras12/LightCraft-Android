@@ -74,6 +74,15 @@ fn main() {
         println!("catalog {before} -> {}", host.app.session.catalog.len());
         save(&host.snapshot(Duration::from_secs(5)), &out.join(format!("{name}-after-import.png")));
         let _ = host.app.run("view.detail", json!({}));
+        // the library in selection mode with three photos ticked
+        let _ = host.app.run("view.photoGrid", json!({}));
+        lightcraft_android::mobile::set_select_mode(&host.view.ctx, true);
+        let ids: Vec<u64> = host.app.session.catalog.photos().take(3).map(|p| p.id.0).collect();
+        let _ = host.app.run("library.select", json!({"ids": ids}));
+        host.settle(Duration::from_secs(5));
+        save(&host.snapshot(Duration::from_secs(5)), &out.join(format!("{name}-select.png")));
+        lightcraft_android::mobile::set_select_mode(&host.view.ctx, false);
+        let _ = host.app.run("view.detail", json!({}));
         // the histogram card in three displays
         lightcraft_android::mobile::close_sheets(&host.view.ctx);
         host.app.ui.histogram = true;
