@@ -50,19 +50,24 @@ phone and tablet interface modelled on Lightroom for Android.
 
 ## Install the test build
 
-`Debug/lightcraft-debug.apk` is a debuggable build for 64-bit ARM phones and tablets (Android 10 or newer),
-signed with a throwaway debug key (`Debug/debug.keystore`, password `android`). It is not a release key.
+Download the APK from the **[Releases page](https://github.com/galandras12/LightCraft-Android/releases)**.
+It is a debuggable build for 64-bit ARM phones and tablets (Android 10 or newer), signed with a throwaway
+debug key (`Debug/debug.keystore`, password `android`). It is not a release key.
 
-1. Copy the APK to the device (or use `adb install Debug/lightcraft-debug.apk`).
-2. Allow installing apps from your file manager or browser when Android asks.
+1. Download the APK on the device (or use `adb install lightcraft-debug.apk`).
+2. Allow installing apps from your browser or file manager when Android asks.
 3. On the first use of Add photos, allow file access. On Android 11 and newer the app opens the
    "All files access" settings page; switch it on and come back to the app.
 
-`Debug/lightcraft-debug-unsigned.apk` is the same package without a signature. Android refuses to install
-it; it is kept for people who want to sign it with their own key (`apksigner sign --ks my.keystore ...`).
+The installable file is `lightcraft-debug.apk`. `lightcraft-debug-unsigned.apk` is the same package without a
+signature: Android refuses to install it, it is there for people who want to sign it with their own key
+(`apksigner sign --ks my.keystore ...`). The build script also writes both files to the `Debug/` folder of
+this repository.
 
 If you upgrade from an older test build that showed sample photos, clear the app's storage (or uninstall
 first) to get the empty library and the welcome screen.
+
+What changed in each version is listed in the [Changelog](CHANGELOG.md).
 
 ## How it is built
 
