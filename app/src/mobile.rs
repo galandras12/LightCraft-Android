@@ -800,6 +800,14 @@ fn edit_sliders(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State) {
             Tab::Detail => list(app, ui, &d, DETAIL),
             Tab::Optics => {
                 lens_profile_ui(app, ui, st);
+                // Automatic chromatic aberration removal: the engine measures the lateral colour fringes of
+                // the picture itself; the Red/Cyan and Blue/Yellow sliders below fine-tune the estimate.
+                let mut auto_ca = d.optics.remove_ca;
+                ui.add_space(4.0);
+                if ui.checkbox(&mut auto_ca, "Remove chromatic aberration (automatic)").changed() {
+                    let _ = app.run("develop.merge", json!({"settings": {"optics": {"remove_ca": auto_ca}}, "label": "Remove CA"}));
+                }
+                ui.add_space(4.0);
                 list(app, ui, &d, OPTICS);
             }
         }
@@ -1113,6 +1121,12 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
                 let name = b.dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| b.dir.display().to_string());
                 ui.add(egui::Label::new(RichText::new(name).size(16.0).color(t.text)).truncate());
             });
+            // A cross at the right end leaves the browser at once, from any folder.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if icon_btn(ui, "m_b_close", Icon::Close, false, true, "Close").clicked() {
+                    close = true;
+                }
+            });
         });
     });
 
@@ -1159,6 +1173,10 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
         egui::Panel::bottom("m_b_bottom").exact_size(TOOLBAR_H + insets.bottom).frame(Frame::NONE.fill(t.chrome).stroke(Stroke::new(1.0, t.divider))).show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(16.0);
+                // Cancel leaves the browser without importing anything.
+                if ui.add(egui::Button::new(RichText::new("Cancel").size(16.0)).min_size(vec2(96.0, 44.0))).clicked() {
+                    close = true;
+                }
                 let (noun, verb) = match b.purpose {
                     Purpose::Photos => ("photo", "Import"),
                     Purpose::LensProfiles => ("file", "Load"),

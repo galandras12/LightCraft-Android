@@ -7,6 +7,10 @@ fixed on that day. Entries are written in English.
 
 ### Added
 
+- **Automatic chromatic aberration removal** switch at the top of the Optics tab (below the lens profile). The
+  engine measures the colour fringes of the picture itself; the Red/Cyan and Blue/Yellow sliders fine-tune it.
+- **Close and Cancel in the Add photos browser**: a cross in the top bar and a Cancel button next to Import leave
+  the browser at once without importing anything.
 - **Colour range selector for masks**: adding a Colour Range mask (or tapping **Pick**) shows the same draggable ring
   as the white balance selector. The check mark samples the colour under the ring; a **+ / 1** chip chooses whether
   the sample is added to the range (up to 5) or replaces it, so the desktop Shift-click is no longer needed. The
