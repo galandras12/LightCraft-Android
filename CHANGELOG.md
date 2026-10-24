@@ -3,6 +3,23 @@
 All notable changes to LightCraft for Android, newest date first. Each date lists what was added, changed or
 fixed on that day. Entries are written in English.
 
+## 2026-10-24
+
+### Added
+
+- **White balance selector** (Color tab, **Pick**): a ring with a small circle appears on the photo. Drag it onto
+  something that should be white or grey (a tap moves it there) and tap the check mark to set the white balance
+  from that spot; the cross cancels. It replaces the click-on-the-photo selector of the desktop interface, which
+  a finger cannot aim.
+- **Sorting in the Add photos browser**: a Sort button offers date (newest or oldest first), name (A to Z or
+  Z to A) and size (largest or smallest first). Newest first is the default and the choice is kept between visits.
+  Folders always come first.
+
+### Changed
+
+- The Add photos browser has a second row under the top bar for Sort, Grid or List and Select all.
+- The README install section points to the Releases page, and a changelog was added.
+
 ## 2026-10-23
 
 First working version of the Android port, built up over the day from a bare `arm64-v8a` build to a phone and

@@ -1,0 +1,83 @@
+Android port: the white balance selector for touch screens.
+
+With a mouse the selector is a click on the photo. A finger covers what it points at, so when a host layout is
+installed (`mobile_layout`) the selector shows a ring with a small circle in its middle that is dragged onto
+something that should be white or grey, a hint, a check button that sets the white balance from that spot
+(`develop.wbPick`) and a cross that cancels. A tap on the photo moves the ring there.
+diff --git a/crates/ui-egui/src/panels/detail.rs b/crates/ui-egui/src/panels/detail.rs
+index b95d7b0..15d2709 100644
+--- a/crates/ui-egui/src/panels/detail.rs
++++ b/crates/ui-egui/src/panels/detail.rs
+@@ -1534,6 +1534,60 @@ fn general_cursor(app: &LightcraftApp, ui: &egui::Ui, resp: &egui::Response, img
+     ui.ctx().set_cursor_icon(cursor);
+ }
+ 
++/// The white balance selector for touch screens (Android port): a ring with a small circle in its middle that is
++/// dragged onto something that should be neutral (white or grey), under a hint, with a check button that sets the
++/// white balance from that spot and a cross that cancels. A tap on the photo moves the ring there. The spot is kept
++/// in screen coordinates (the photo does not pan or zoom while the selector is open).
++fn wb_picker_touch(app: &mut LightcraftApp, ui: &mut egui::Ui, resp: &egui::Response, map: &CanvasMap, canvas: Rect, img: Rect) {
++    const RING: f32 = 46.0;
++    let key = egui::Id::new("wb-picker-spot");
++    // the ring starts in the middle of the photo and stays on it
++    let mut spot: Pos2 = ui.data(|d| d.get_temp::<Pos2>(key)).filter(|p| img.contains(*p)).unwrap_or_else(|| img.center());
++    if resp.dragged() {
++        spot += resp.drag_delta();
++    } else if resp.clicked()
++        && let Some(q) = resp.interact_pointer_pos()
++    {
++        spot = q;
++    }
++    let inner = img.shrink(4.0);
++    spot = pos2(spot.x.clamp(inner.left(), inner.right()), spot.y.clamp(inner.top(), inner.bottom()));
++    ui.data_mut(|d| d.insert_temp(key, spot));
++
++    let painter = ui.painter_at(canvas);
++    // the ring and the small circle: a dark edge under a light line, so they show on light and dark ground
++    for (radius, width) in [(RING, 3.0), (7.0, 1.5)] {
++        painter.circle_stroke(spot, radius, Stroke::new(width + 2.5, Color32::from_black_alpha(120)));
++        painter.circle_stroke(spot, radius, Stroke::new(width, Color32::from_gray(235)));
++    }
++    // the hint, with a dark shadow so that it reads on any photo
++    let hint = crate::i18n::tr("Drag the ring onto something white or grey");
++    for (offset, color) in [(vec2(1.0, 1.0), Color32::from_black_alpha(200)), (vec2(0.0, 0.0), Color32::WHITE)] {
++        painter.text(pos2(canvas.center().x, canvas.top() + 22.0) + offset, Align2::CENTER_CENTER, hint, egui::FontId::proportional(14.0), color);
++    }
++
++    // the buttons: cancel and apply, side by side at the bottom of the photo
++    let y = canvas.bottom() - 40.0;
++    let cancel = Rect::from_center_size(pos2(canvas.center().x - 44.0, y), vec2(52.0, 52.0));
++    let apply = Rect::from_center_size(pos2(canvas.center().x + 44.0, y), vec2(52.0, 52.0));
++    let t = Tokens::get(ui.ctx());
++    for (rect, id, fill, icon) in
++        [(cancel, "wb-picker-cancel", Color32::from_gray(60), crate::icons::Icon::Close), (apply, "wb-picker-apply", t.accent, crate::icons::Icon::Check)]
++    {
++        let r = ui.interact(rect, egui::Id::new(id), Sense::click());
++        painter.circle_filled(rect.center(), 26.0, if r.is_pointer_button_down_on() { fill.gamma_multiply(0.8) } else { fill });
++        crate::icons::paint(&painter, Rect::from_center_size(rect.center(), vec2(24.0, 24.0)), icon, Color32::WHITE);
++        if r.clicked() {
++            if id == "wb-picker-apply" {
++                let n = map.norm(spot);
++                let _ = app.run("develop.wbPick", json!({"x": n.x, "y": n.y}));
++            }
++            app.ui.tool.clear();
++            ui.data_mut(|d| d.remove::<Pos2>(key));
++        }
++    }
++}
++
+ fn general_interaction(
+     app: &mut LightcraftApp,
+     ui: &mut egui::Ui,
+@@ -1545,6 +1599,11 @@ fn general_interaction(
+     aspect: f32,
+ ) {
+     if app.ui.tool == "wbPicker" {
++        // Android port: with a finger there is no pointer to aim with, so the host's layout gets a ring to drag
++        if app.mobile_layout.is_some() {
++            wb_picker_touch(app, ui, resp, map, canvas, img);
++            return;
++        }
+         if resp.clicked()
+             && let Some(q) = resp.interact_pointer_pos()
+         {

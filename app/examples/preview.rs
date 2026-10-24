@@ -92,6 +92,12 @@ fn main() {
             save(&host.snapshot(Duration::from_secs(5)), &out.join(format!("{name}-histogram-{mode}.png")));
         }
         host.app.ui.histogram = false;
+        // the white balance selector ring
+        lightcraft_android::mobile::open_edit_tab(&host.view.ctx, "color");
+        let _ = host.app.run("tool.wbPicker", json!({}));
+        host.settle(Duration::from_secs(5));
+        save(&host.snapshot(Duration::from_secs(5)), &out.join(format!("{name}-wb-picker.png")));
+        host.app.ui.tool.clear();
         for tab in ["light", "color", "effects", "detail", "optics", "crop", "crop-geometry"] {
             lightcraft_android::mobile::open_edit_tab(&host.view.ctx, tab);
             host.settle(Duration::from_secs(5));

@@ -22,8 +22,9 @@ phone and tablet interface modelled on Lightroom for Android.
   - **Light**: an Auto button at the top, which adapts Exposure, Highlights, Whites, Shadows, Blacks, Contrast
     and Vibrance to the picture (clipping headroom, share of deep shadow, tonal range, colourfulness), plus
     Reset and a parametric tone curve.
-  - **Color**: a white balance preset list, an automatic white balance button, B&W, temperature, tint,
-    vibrance and saturation.
+  - **Color**: a white balance preset list, an automatic white balance button, a white balance selector
+    (drag a ring onto something white or grey and tap the check mark), B&W, temperature, tint, vibrance and
+    saturation.
   - **Detail**: sharpening and noise reduction. Noise reduction is a wavelet filter that measures the noise
     of the picture itself and keeps edges and texture.
   - **Optics**: a lens profile drop-down at the top (None, Automatic, or any lens of the loaded database with
@@ -40,7 +41,7 @@ phone and tablet interface modelled on Lightroom for Android.
   them, long menus scroll, and submenus unfold on a tap.
 - **Add photos**: a built-in file browser for the device storage with thumbnails (a grid or a list; a raw
   file shows its embedded preview), so the photos can be seen before they are imported. Tick photos or import
-  a whole folder.
+  a whole folder. The files can be sorted by date (newest or oldest first), name or size.
   Files are referenced where they are; nothing is copied or moved.
 - **Safe areas**: the bars keep clear of the status bar, the navigation bar and display cut-outs.
 - **Formats** (all decoded by the upstream engine): JPEG, PNG, TIFF, WebP, JPEG XL, GIF, BMP, PSD, HEIC/HEIF
@@ -94,6 +95,7 @@ The upstream crates are used as they are, except for the patches in `patches/`:
 | `0002-touch-friendly-widgets` | scrolling context menus that close on a tap outside, tap-to-unfold submenus, sliders that only the thumb moves |
 | `0003-light-and-noise-reduction` | adaptive Auto light and the wavelet noise reduction (GPU render falls back to the CPU filter) |
 | `0004-lens-profiles` | a reloadable lens database, the lens profile commands, the chosen profile in the render |
+| `0005-touch-white-balance-selector` | a draggable ring with check and cancel buttons for the white balance selector |
 
 The phone layout in `app/src/mobile.rs` reuses upstream widgets: the photo grid, the loupe, the slider row and
 the preset, masking and remove panels. After editing files in `third_party/lightcraft`, run

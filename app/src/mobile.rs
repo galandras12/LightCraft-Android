@@ -181,6 +181,8 @@ struct State {
     crop: crate::crop::CropState,
     /// The histogram card (chosen display).
     hist: crate::histogram::HistState,
+    /// The order the Add photos browser uses (kept between visits).
+    browser_sort: SortKey,
     /// Selection mode of the library: a tap on a photo ticks it (as Ctrl+click does on a desktop) instead of opening it.
     select_mode: bool,
 }
@@ -325,7 +327,7 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
                     egui::Popup::menu(&more).show(|ui| grid_menu(app, ui));
                     // "+" opens the file browser to add photos.
                     if icon_btn(ui, "m_import", Icon::Plus, false, true, "Add photos").clicked() {
-                        st.browser = Some(Browser::open(&start_dir(), Purpose::Photos));
+                        st.browser = Some(Browser::open(&start_dir(), Purpose::Photos, st.browser_sort));
                     }
                     // "Select" starts the selection mode: several photos can be ticked, for example to delete them.
                     if widgets::text_button(ui, "m_select", "Select", false).clicked() {
@@ -420,7 +422,7 @@ fn grid_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, inset
         // The welcome screen fills the whole body.
         let tapped = egui::CentralPanel::default().frame(Frame::NONE.fill(t.grid_bg)).show(ui, welcome::show).inner;
         if tapped {
-            st.browser = Some(Browser::open(&start_dir(), Purpose::Photos));
+            st.browser = Some(Browser::open(&start_dir(), Purpose::Photos, st.browser_sort));
         }
         return;
     }
@@ -769,6 +771,16 @@ fn edit_sliders(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State) {
                         let _ = app.run("develop.wb", json!({"mode": "auto"}));
                         app.toast(ui.ctx(), "Auto white balance applied");
                     }
+                    // Pick: the white balance selector. A ring appears on the photo; drag it onto something that
+                    // should be white or grey and tap the check mark.
+                    let picking = app.ui.tool == "wbPicker";
+                    if widgets::text_button(ui, "m_wb_pick", "Pick", picking).clicked() {
+                        if picking {
+                            app.ui.tool.clear();
+                        } else if let Err(e) = app.run("tool.wbPicker", json!({})) {
+                            app.toast(ui.ctx(), e);
+                        }
+                    }
                     if widgets::text_button(ui, "m_bw", "B&W", lightcraft_ui_egui::is_bw(&d)).clicked() {
                         let _ = app.run("develop.treatment", json!({}));
                     }
@@ -875,7 +887,7 @@ fn lens_profile_ui(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State) {
     // Loading profile files: opens the file browser on the XML files.
     tab_actions(ui, |ui| {
         if widgets::text_button(ui, "m_lens_load", "Load profiles...", false).clicked() {
-            st.browser = Some(Browser::open(&download_dir(), Purpose::LensProfiles));
+            st.browser = Some(Browser::open(&download_dir(), Purpose::LensProfiles, SortKey::NameAsc));
         }
         if loaded {
             let total = info["total"].as_u64().unwrap_or(0);
@@ -910,6 +922,42 @@ struct Entry {
     name: String,
     dir: bool,
     size: u64,
+    /// When the file was last changed (seconds since 1970; 0 when unknown): for sorting by date.
+    modified: u64,
+}
+
+/// How the entries of the file browser are ordered. Folders always come first.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum SortKey {
+    /// Newest file first (by the date the file was changed).
+    #[default]
+    Newest,
+    /// Oldest file first.
+    Oldest,
+    /// Name A to Z.
+    NameAsc,
+    /// Name Z to A.
+    NameDesc,
+    /// Largest file first.
+    Largest,
+    /// Smallest file first.
+    Smallest,
+}
+
+impl SortKey {
+    const ALL: [SortKey; 6] = [SortKey::Newest, SortKey::Oldest, SortKey::NameAsc, SortKey::NameDesc, SortKey::Largest, SortKey::Smallest];
+
+    /// The text of the sort menu entry and of the sort button.
+    fn label(self) -> &'static str {
+        match self {
+            SortKey::Newest => "Date: newest first",
+            SortKey::Oldest => "Date: oldest first",
+            SortKey::NameAsc => "Name: A to Z",
+            SortKey::NameDesc => "Name: Z to A",
+            SortKey::Largest => "Size: largest first",
+            SortKey::Smallest => "Size: smallest first",
+        }
+    }
 }
 
 /// What the file browser is for.
@@ -945,6 +993,8 @@ struct Browser {
     purpose: Purpose,
     /// Photos are shown as a grid of thumbnails (else as a list with a small thumbnail).
     grid: bool,
+    /// The order of the entries.
+    sort: SortKey,
     dir: std::path::PathBuf,
     entries: Vec<Entry>,
     selected: std::collections::BTreeSet<std::path::PathBuf>,
@@ -973,8 +1023,8 @@ fn is_photo(name: &str) -> bool {
 
 /// Reading and navigating the folder of the file browser.
 impl Browser {
-    fn open(dir: &std::path::Path, purpose: Purpose) -> Browser {
-        let mut b = Browser { purpose, grid: purpose == Purpose::Photos, dir: dir.to_path_buf(), entries: vec![], selected: Default::default(), error: None };
+    fn open(dir: &std::path::Path, purpose: Purpose, sort: SortKey) -> Browser {
+        let mut b = Browser { purpose, grid: purpose == Purpose::Photos, sort, dir: dir.to_path_buf(), entries: vec![], selected: Default::default(), error: None };
         b.read();
         b
     }
@@ -991,13 +1041,32 @@ impl Browser {
                     }
                     let Ok(meta) = e.metadata() else { continue };
                     if meta.is_dir() || self.purpose.accepts(&name) {
-                        self.entries.push(Entry { path: e.path(), name, dir: meta.is_dir(), size: meta.len() });
+                        let modified = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+                        self.entries.push(Entry { path: e.path(), name, dir: meta.is_dir(), size: meta.len(), modified });
                     }
                 }
-                self.entries.sort_by(|a, b| b.dir.cmp(&a.dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+                self.sort_entries();
             }
             Err(e) => self.error = Some(format!("{}: {e}", self.dir.display())),
         }
+    }
+
+    /// Puts the entries in the chosen order: folders first, then by name, date or size. Folders have no size, so
+    /// they are ordered by name when sorting by size.
+    fn sort_entries(&mut self) {
+        let sort = self.sort;
+        self.entries.sort_by(|a, b| {
+            let by_name = || a.name.to_lowercase().cmp(&b.name.to_lowercase());
+            b.dir.cmp(&a.dir).then_with(|| match sort {
+                SortKey::NameAsc => by_name(),
+                SortKey::NameDesc => b.name.to_lowercase().cmp(&a.name.to_lowercase()),
+                SortKey::Newest => b.modified.cmp(&a.modified).then_with(by_name),
+                SortKey::Oldest => a.modified.cmp(&b.modified).then_with(by_name),
+                SortKey::Largest if !a.dir => b.size.cmp(&a.size).then_with(by_name),
+                SortKey::Smallest if !a.dir => a.size.cmp(&b.size).then_with(by_name),
+                SortKey::Largest | SortKey::Smallest => by_name(),
+            })
+        });
     }
 
     fn go(&mut self, dir: &std::path::Path) {
@@ -1027,7 +1096,7 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
     let mut import: Option<Vec<String>> = None;
     let mut go: Option<std::path::PathBuf> = None;
 
-    // Top bar of the browser: back / up one folder, folder name, Select all.
+    // Top bar of the browser: back / up one folder and the folder name.
     egui::Panel::top("m_b_top").exact_size(BAR_H + insets.top).frame(bar_frame(&t)).show(ui, |ui| {
         ui.add_space(insets.top);
         ui.horizontal_centered(|ui| {
@@ -1044,13 +1113,34 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
                 let name = b.dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| b.dir.display().to_string());
                 ui.add(egui::Label::new(RichText::new(name).size(16.0).color(t.text)).truncate());
             });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        });
+    });
+
+    // The row under the top bar: sort order, grid or list, Select all.
+    if access {
+        egui::Panel::top("m_b_tools").exact_size(52.0).frame(Frame::NONE.fill(t.chrome).inner_margin(Margin { left: 12, right: 12, top: 0, bottom: 0 })).show(ui, |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                // The sort order: a button that opens the list of orders (newest first, name, size...).
+                let sort_button = widgets::text_button(ui, "m_b_sort", &format!("Sort: {}", b.sort.label()), false);
+                egui::Popup::menu(&sort_button).show(|ui| {
+                    ui.set_min_width(200.0);
+                    for key in SortKey::ALL {
+                        if ui.selectable_label(b.sort == key, key.label()).clicked() {
+                            b.sort = key;
+                            b.sort_entries();
+                            // the thumbnails are asked for again in the new order
+                            app.renderer.forget_imports();
+                            ui.close();
+                        }
+                    }
+                });
                 // Thumbnails as a grid or as a list.
-                if b.purpose == Purpose::Photos && access && widgets::text_button(ui, "m_b_view", if b.grid { "List" } else { "Grid" }, false).clicked() {
+                if b.purpose == Purpose::Photos && widgets::text_button(ui, "m_b_view", if b.grid { "List" } else { "Grid" }, false).clicked() {
                     b.grid = !b.grid;
                 }
-                // "Select all" selects every photo of the folder, or clears the selection when all are selected.
-                if access && b.files().next().is_some() && widgets::text_button(ui, "m_b_all", "Select all", false).clicked() {
+                // "Select all" selects every file of the folder, or clears the selection when all are selected.
+                if b.files().next().is_some() && widgets::text_button(ui, "m_b_all", "Select all", false).clicked() {
                     let all: Vec<_> = b.files().map(|e| e.path.clone()).collect();
                     if all.iter().all(|p| b.selected.contains(p)) {
                         b.selected.clear();
@@ -1060,7 +1150,7 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
                 }
             });
         });
-    });
+    }
 
     // Number of photos ticked in the current folder.
     let n = b.selected.len();
@@ -1177,6 +1267,7 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
             }
         }
     }
+    st.browser_sort = b.sort;
     if !close {
         st.browser = Some(b);
     }
@@ -1291,6 +1382,6 @@ fn browser_grid(app: &mut LightcraftApp, ui: &mut egui::Ui, b: &mut Browser, fil
 pub fn open_browser(ctx: &egui::Context, dir: &std::path::Path) {
     let key = Id::new("lightcraft-mobile");
     let mut st: State = ctx.data(|d| d.get_temp(key)).unwrap_or_default();
-    st.browser = Some(Browser::open(dir, Purpose::Photos));
+    st.browser = Some(Browser::open(dir, Purpose::Photos, st.browser_sort));
     ctx.data_mut(|d| d.insert_temp(key, st));
 }
