@@ -7,6 +7,10 @@ fixed on that day. Entries are written in English.
 
 ### Added
 
+- **Colour range selector for masks**: adding a Colour Range mask (or tapping **Pick**) shows the same draggable ring
+  as the white balance selector. The check mark samples the colour under the ring; a **+ / 1** chip chooses whether
+  the sample is added to the range (up to 5) or replaces it, so the desktop Shift-click is no longer needed. The
+  Masking panel texts that mentioned Shift-click were reworded.
 - **White balance selector** (Color tab, **Pick**): a ring with a small circle appears on the photo. Drag it onto
   something that should be white or grey (a tap moves it there) and tap the check mark to set the white balance
   from that spot; the cross cancels. It replaces the click-on-the-photo selector of the desktop interface, which

@@ -36,6 +36,8 @@ phone and tablet interface modelled on Lightroom for Android.
 - **Histogram**: a button in the edit top bar shows a histogram card over the photo. Its chips switch between
   luminosity, RGB (the three channels over each other, to judge the colour balance), each channel alone and a
   parade, with clipping markers and the average level of each channel.
+- **Masking**: the colour range mask is picked with the same kind of ring as the white balance; a +/1 chip adds more
+  samples (up to 5) instead of a Shift-click.
 - **Touch behaviour**: a slider moves only when its thumb is dragged (a tap on the track or a scroll that
   starts on it changes nothing; tap the number to type an exact value). Menus stay open until a tap outside
   them, long menus scroll, and submenus unfold on a tap.
@@ -95,7 +97,7 @@ The upstream crates are used as they are, except for the patches in `patches/`:
 | `0002-touch-friendly-widgets` | scrolling context menus that close on a tap outside, tap-to-unfold submenus, sliders that only the thumb moves |
 | `0003-light-and-noise-reduction` | adaptive Auto light and the wavelet noise reduction (GPU render falls back to the CPU filter) |
 | `0004-lens-profiles` | a reloadable lens database, the lens profile commands, the chosen profile in the render |
-| `0005-touch-white-balance-selector` | a draggable ring with check and cancel buttons for the white balance selector |
+| `0005-touch-selectors` | a draggable ring with check and cancel buttons for the white balance selector and the colour range mask (with an add-sample switch instead of Shift-click) |
 
 The phone layout in `app/src/mobile.rs` reuses upstream widgets: the photo grid, the loupe, the slider row and
 the preset, masking and remove panels. After editing files in `third_party/lightcraft`, run
