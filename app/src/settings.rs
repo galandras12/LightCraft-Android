@@ -198,7 +198,7 @@ fn heading(ui: &mut egui::Ui, text: &str) {
 /// One row: the label on the left, the control on the right.
 fn row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
-        ui.label(tr(label));
+        ui.add(egui::Label::new(tr(label)).truncate());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), add);
     });
     ui.add_space(4.0);
@@ -208,7 +208,7 @@ fn row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
 fn choice(ui: &mut egui::Ui, id: &str, current: &str, items: &[(&str, String)]) -> Option<String> {
     let shown = items.iter().find(|(c, _)| *c == current).map(|(_, l)| l.clone()).unwrap_or_else(|| current.to_string());
     let mut picked = None;
-    egui::ComboBox::from_id_salt(id).selected_text(shown).width(190.0).show_ui(ui, |ui| {
+    egui::ComboBox::from_id_salt(id).selected_text(shown).width(165.0).show_ui(ui, |ui| {
         for (code, label) in items {
             if ui.selectable_label(*code == current, label).clicked() {
                 picked = Some((*code).to_string());

@@ -14,6 +14,13 @@ section with the date of that build.
   gallery apps (on by default). The media scanner is told about new files; with the switch off the folder is hidden
   with a `.nomedia` file.
 
+- **Watermark settings** in the export settings: a watermark can be written into every exported photo. It is a text or
+  a picture of your own (a PNG with a transparent background works best). One watermark sits at the bottom left, top
+  left, bottom right, top right, bottom middle or top middle, or a **mosaic** repeats it over the whole photo (rows
+  offset by half a tile, with an adjustable space between). The direction can be horizontal, vertical, or diagonal
+  (rising or falling). Colour, opacity, text size and a soft shadow are adjustable, and six text styles are bundled
+  (Modern, Clean, Heavy, Serif, Serif italic, Monospace; patch 0008 and `app/fonts`). A preview shows the result.
+
 ## 2026-10-25
 
 ### Added

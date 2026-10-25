@@ -41,8 +41,9 @@ phone and tablet interface modelled on Lightroom for Android.
 - **Menu and Settings**: the menu button next to the app name opens Settings: the interface language (English,
   Spanish, German, French, Croatian, Romanian, Hungarian, Slovak, Polish, Norwegian, Ukrainian, Russian, Italian;
   Automatic follows the system language and falls back to English), the export settings (format, quality, size,
-  colour space, metadata, HDR, destination folder, default `DCIM/LightCraft`, and whether exported photos show in the gallery) and the copyright information that is
-  written into exported files.
+  colour space, metadata, HDR, destination folder, default `DCIM/LightCraft`, and whether exported photos show in the gallery) the copyright information that is
+  written into exported files, and a watermark (text or your own picture, one mark or a mosaic, any direction,
+  colour, opacity and text style).
 - **Export**: the export button at the top right of the edit screen saves the photo with those settings; in the
   selection mode it exports the selected photos, all photos or only the edited ones. Edited photos carry a badge in
   the bottom left corner of their thumbnail.
@@ -107,6 +108,7 @@ The upstream crates are used as they are, except for the patches in `patches/`:
 | `0002-touch-friendly-widgets` | scrolling context menus that close on a tap outside, tap-to-unfold submenus, sliders that only the thumb moves |
 | `0003-light-and-noise-reduction` | adaptive Auto light and the wavelet noise reduction (GPU render falls back to the CPU filter) |
 | `0004-lens-profiles` | a reloadable lens database, the lens profile commands, the chosen profile in the render |
+| `0008-watermark-mosaic` | watermarks at any angle, as a mosaic, in a chosen text style |
 | `0007-touch-edited-badge` | the edited badge is always drawn on a thumbnail (a touch screen has no hover) |
 | `0006-more-languages` | Croatian, Romanian, Hungarian, Slovak and Norwegian catalogs for the upstream interface |
 | `0005-touch-selectors` | a draggable ring with check and cancel buttons for the white balance selector and the colour range mask (with an add-sample switch instead of Shift-click) |
