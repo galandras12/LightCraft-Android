@@ -800,6 +800,13 @@ fn edit_sliders(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State) {
             Tab::Detail => list(app, ui, &d, DETAIL),
             Tab::Optics => {
                 lens_profile_ui(app, ui, st);
+                // The lens corrections themselves: the data embedded in the file (DNG, and the Sony, Nikon,
+                // Fujifilm and Panasonic raw conversions of the engine) or the chosen database profile.
+                let mut profile_on = d.optics.lens_profile;
+                ui.add_space(4.0);
+                if ui.checkbox(&mut profile_on, "Enable lens corrections").changed() {
+                    let _ = app.run("develop.merge", json!({"settings": {"optics": {"lens_profile": profile_on}}, "label": "Lens Corrections"}));
+                }
                 // Automatic chromatic aberration removal: the engine measures the lateral colour fringes of
                 // the picture itself; the Red/Cyan and Blue/Yellow sliders below fine-tune the estimate.
                 let mut auto_ca = d.optics.remove_ca;

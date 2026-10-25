@@ -7,6 +7,8 @@ fixed on that day. Entries are written in English.
 
 ### Added
 
+- **Enable lens corrections** switch in the Optics tab, which turns the embedded lens data of the file (DNG,
+  and the Sony, Nikon, Fujifilm and Panasonic conversions of the engine) or the chosen database profile on or off.
 - **Automatic chromatic aberration removal** switch at the top of the Optics tab (below the lens profile). The
   engine measures the colour fringes of the picture itself; the Red/Cyan and Blue/Yellow sliders fine-tune it.
 - **Close and Cancel in the Add photos browser**: a cross in the top bar and a Cancel button next to Import leave
