@@ -17,6 +17,7 @@ use egui::{Color32, FontId, Frame, Id, Margin, Pos2, Rect, RichText, Sense, Stro
 use lightcraft_ui_egui::LightcraftApp;
 use lightcraft_ui_egui::render::Slot;
 use lightcraft_ui_egui::theme::Tokens;
+use crate::i18n::tr;
 use serde_json::json;
 
 /// What the histogram card shows.
@@ -96,7 +97,7 @@ pub fn show(ctx: &egui::Context, app: &mut LightcraftApp, area: Rect, st: &mut H
                 ui.spacing_mut().item_spacing.x = 4.0;
                 for mode in HistMode::ALL {
                     let selected = st.mode == mode;
-                    let text = RichText::new(mode.label()).size(12.5).color(if selected { Color32::WHITE } else { t.text_dim });
+                    let text = RichText::new(tr(mode.label())).size(12.5).color(if selected { Color32::WHITE } else { t.text_dim });
                     let button = egui::Button::new(text).fill(if selected { t.accent } else { Color32::TRANSPARENT }).min_size(vec2(0.0, 30.0));
                     if ui.add(button).clicked() {
                         st.mode = mode;
@@ -148,7 +149,7 @@ pub fn show(ctx: &egui::Context, app: &mut LightcraftApp, area: Rect, st: &mut H
             // The average level of each channel, in percent: a quick check of the colour balance.
             ui.add_space(4.0);
             let line = if matches!(st.mode, HistMode::Luminosity) {
-                format!("Lum {:.0}%    shadows {} / highlights {}", mean(&hist.luma), clip_text(clipping.0), clip_text(clipping.1))
+                crate::i18n::tf("Lum {lum}%    shadows {s} / highlights {h}", &[("lum", format!("{:.0}", mean(&hist.luma))), ("s", clip_text(clipping.0)), ("h", clip_text(clipping.1))])
             } else {
                 format!("R {:.0}%   G {:.0}%   B {:.0}%", mean(&hist.r), mean(&hist.g), mean(&hist.b))
             };
@@ -162,7 +163,7 @@ pub fn show(ctx: &egui::Context, app: &mut LightcraftApp, area: Rect, st: &mut H
 
 /// "clipped 1.2%" or "ok": the share of clipped pixels.
 fn clip_text(fraction: f32) -> String {
-    if fraction > 0.003 { format!("{:.1}%", fraction * 100.0) } else { "ok".to_string() }
+    if fraction > 0.003 { format!("{:.1}%", fraction * 100.0) } else { tr("ok") }
 }
 
 /// The average level (0..100 %) of a 256-bin histogram.

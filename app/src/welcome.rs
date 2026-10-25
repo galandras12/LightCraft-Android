@@ -6,6 +6,7 @@
 //! white, the other side in colour, like a before/after view. A large button with a small cast
 //! shadow sits in the middle and asks the user to import photos.
 
+use crate::i18n::tr;
 use egui::epaint::{Mesh, Shadow, Vertex};
 use egui::{Align2, Color32, ColorImage, CornerRadius, Id, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2};
 
@@ -50,8 +51,8 @@ pub fn show(ui: &mut egui::Ui) -> bool {
     let fill = if response.hovered() || pressed { Color32::from_rgb(52, 126, 236) } else { Color32::from_rgb(38, 110, 222) };
     painter.rect_filled(body, radius, fill);
     painter.rect_stroke(body, radius, Stroke::new(1.0, Color32::from_white_alpha(70)), egui::StrokeKind::Inside);
-    painter.text(body.center(), Align2::CENTER_CENTER, BUTTON_TEXT, egui::FontId::proportional(18.0), Color32::WHITE);
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, RichText::new(BUTTON_TEXT).text()));
+    painter.text(body.center(), Align2::CENTER_CENTER, tr(BUTTON_TEXT), egui::FontId::proportional(18.0), Color32::WHITE);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, RichText::new(tr(BUTTON_TEXT)).text()));
     response.clicked()
 }
 

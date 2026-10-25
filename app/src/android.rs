@@ -99,6 +99,17 @@ fn request_storage_access() {
     });
 }
 
+/// The system language as a BCP-47 tag (`hu-HU`), from `java.util.Locale.getDefault()`; empty when unknown.
+fn system_language() -> String {
+    with_jni(|env, _| {
+        let locale = env.call_static_method("java/util/Locale", "getDefault", "()Ljava/util/Locale;", &[])?.l()?;
+        let tag = env.call_method(&locale, "toLanguageTag", "()Ljava/lang/String;", &[])?.l()?;
+        let tag: String = env.get_string(&jni::objects::JString::from(tag))?.into();
+        Ok(tag)
+    })
+    .unwrap_or_default()
+}
+
 /// Wraps the upstream app so that `eframe` can drive it.
 struct App(LightcraftApp);
 
@@ -129,6 +140,7 @@ fn android_main(app: AndroidApp) {
         storage_access,
         request_storage_access,
         storage_root: "/storage/emulated/0".into(),
+        system_language,
     });
     let data = app.internal_data_path();
     if let Some(dir) = &data {
@@ -154,7 +166,11 @@ fn android_main(app: AndroidApp) {
                 log::warn!("library: {w}");
             }
             cc.egui_ctx.set_zoom_factor(crate::mobile::ZOOM);
-            let mut app = LightcraftApp::new(session, Services::default());
+            // exported files are written straight to the folder the Settings screen names
+            let mut services = Services::default();
+            services.write = Some(Box::new(|path: &str, bytes: &[u8]| lightcraft_engine::export::write_file(path, bytes)));
+            services.write_shared = Some(std::sync::Arc::new(|path: &str, bytes: &[u8]| lightcraft_engine::export::write_file(path, bytes)));
+            let mut app = LightcraftApp::new(session, services);
             crate::mobile::install(&mut app);
             Ok(Box::new(App(app)))
         }),

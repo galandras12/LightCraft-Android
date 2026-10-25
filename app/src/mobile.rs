@@ -21,6 +21,7 @@ use lightcraft_ui_egui::state::{RightPanel, ViewMode};
 use lightcraft_ui_egui::theme::Tokens;
 use lightcraft_ui_egui::widgets;
 
+use crate::i18n::{tf, tr};
 use crate::welcome;
 use serde_json::json;
 
@@ -29,7 +30,7 @@ pub const ZOOM: f32 = 1.15;
 /// Width (points, after [`ZOOM`]) from which the edit tools sit beside the photo.
 const WIDE: f32 = 760.0;
 /// Height of the top bar in points (the status bar inset is added on top of it).
-const BAR_H: f32 = 56.0;
+pub(crate) const BAR_H: f32 = 56.0;
 /// Height of the bottom tool bar (Auto, Presets, Crop, Edit, Masking, Remove) in points.
 const TOOLBAR_H: f32 = 64.0;
 /// Height of the row of edit tabs (Light, Color, Effects, Detail, Optics) in points.
@@ -45,6 +46,8 @@ pub struct Platform {
     pub request_storage_access: fn(),
     /// Where the file browser starts.
     pub storage_root: std::path::PathBuf,
+    /// The system language as a BCP-47 tag (`hu-HU`), for the Automatic language setting.
+    pub system_language: fn() -> String,
 }
 
 /// The platform services, set once by the host at start-up ([`set_platform`]).
@@ -56,12 +59,13 @@ pub fn set_platform(p: Platform) {
 }
 
 /// The platform services; desktop defaults (no insets, storage always readable) when the host set none.
-fn platform() -> &'static Platform {
+pub(crate) fn platform() -> &'static Platform {
     PLATFORM.get_or_init(|| Platform {
         insets_px: || [0.0; 4],
         storage_access: || true,
         request_storage_access: || {},
         storage_root: std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| "/".into()),
+        system_language: || std::env::var("LANG").unwrap_or_default(),
     })
 }
 
@@ -77,6 +81,15 @@ pub fn set_select_mode(ctx: &egui::Context, on: bool) {
     let mut st: State = ctx.data(|d| d.get_temp(key)).unwrap_or_default();
     st.browser = None;
     st.select_mode = on;
+    ctx.data_mut(|d| d.insert_temp(key, st));
+}
+
+/// Opens or closes the Settings screen, for the snapshots.
+pub fn open_settings(ctx: &egui::Context, on: bool) {
+    let key = Id::new("lightcraft-mobile");
+    let mut st: State = ctx.data(|d| d.get_temp(key)).unwrap_or_default();
+    st.browser = None;
+    st.settings = on;
     ctx.data_mut(|d| d.insert_temp(key, st));
 }
 
@@ -183,6 +196,8 @@ struct State {
     hist: crate::histogram::HistState,
     /// The order the Add photos browser uses (kept between visits).
     browser_sort: SortKey,
+    /// The Settings screen is open.
+    settings: bool,
     /// Selection mode of the library: a tap on a photo ticks it (as Ctrl+click does on a desktop) instead of opening it.
     select_mode: bool,
 }
@@ -212,9 +227,19 @@ fn layout(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         // Right cut-out / system bar (landscape).
         egui::Panel::right("m_inset_r").exact_size(insets.right).frame(Frame::NONE.fill(t_.chrome)).show(ui, |_| {});
     }
+    // the interface language: the chosen one, or the system's
+    let language = crate::settings::wanted_language(&crate::settings::get());
+    if app.ui.language != language {
+        app.ui.language = language;
+        lightcraft_ui_egui::i18n::set_language(language);
+    }
     let detail = app.ui.view == ViewMode::Detail;
     let wide = ui.max_rect().width() >= WIDE;
-    if st.browser.is_some() {
+    if st.settings {
+        if crate::settings::screen(app, ui, insets) {
+            st.settings = false;
+        }
+    } else if st.browser.is_some() {
         browser_screen(app, ui, &mut st, insets);
     } else {
         top_bar(app, ui, &mut st, detail, insets);
@@ -228,11 +253,11 @@ fn layout(app: &mut LightcraftApp, ui: &mut egui::Ui) {
 }
 
 #[derive(Clone, Copy, Default)]
-struct Insets {
-    left: f32,
-    top: f32,
-    right: f32,
-    bottom: f32,
+pub(crate) struct Insets {
+    pub left: f32,
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
 }
 
 /// The histogram button of the top bar: five bars of different heights, highlighted while the
@@ -252,13 +277,24 @@ fn histogram_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
     response
 }
 
+/// The menu button of the library's top bar: three horizontal lines.
+fn menu_button(ui: &mut egui::Ui) -> egui::Response {
+    let t = Tokens::get(ui.ctx());
+    let (rect, response) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::click());
+    for dy in [-6.0f32, 0.0, 6.0] {
+        let line = Rect::from_center_size(rect.center() + vec2(0.0, dy), vec2(20.0, 2.4));
+        ui.painter().rect_filled(line, 1.2, t.icon);
+    }
+    response
+}
+
 /// A 44 x 44 point icon button of the top bar.
-fn icon_btn(ui: &mut egui::Ui, id: &str, icon: Icon, active: bool, enabled: bool, tip: &str) -> egui::Response {
-    widgets::icon_button(ui, id, icon, vec2(44.0, 44.0), active, enabled, tip)
+pub(crate) fn icon_btn(ui: &mut egui::Ui, id: &str, icon: Icon, active: bool, enabled: bool, tip: &str) -> egui::Response {
+    widgets::icon_button(ui, id, icon, vec2(44.0, 44.0), active, enabled, &tr(tip))
 }
 
 /// The frame (background and padding) of the top bars.
-fn bar_frame(t: &Tokens) -> Frame {
+pub(crate) fn bar_frame(t: &Tokens) -> Frame {
     Frame::NONE.fill(t.chrome).inner_margin(Margin { left: 6, right: 6, top: 0, bottom: 0 })
 }
 
@@ -285,7 +321,7 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
                 ui.vertical(|ui| {
                     ui.add_space(8.0);
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    let count = pos.map(|p| format!("{} of {}", p + 1, visible.len())).unwrap_or_default();
+                    let count = pos.map(|p| tf("{pos} of {total}", &[("pos", (p + 1).to_string()), ("total", visible.len().to_string())])).unwrap_or_default();
                     ui.label(RichText::new(count).size(13.0).color(t.text_dim));
                     ui.add(egui::Label::new(RichText::new(name).size(15.0).color(t.text)).truncate());
                 });
@@ -295,7 +331,7 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
                     egui::Popup::menu(&more).show(|ui| detail_menu(app, ui));
                     // Undo: a text button, disabled look when there is nothing to undo.
                     let can_undo = !app.session.undo.is_empty();
-                    if widgets::text_button(ui, "m_undo", "Undo", false).clicked() && can_undo {
+                    if widgets::text_button(ui, "m_undo", &tr("Undo"), false).clicked() && can_undo {
                         let _ = app.run("edit.undo", json!({}));
                     }
                     // Histogram: shows or hides the histogram card over the photo (its chips switch the display).
@@ -310,16 +346,25 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
                     st.select_mode = false;
                 }
                 let n = app.session.selection.ids.len();
-                ui.label(RichText::new(format!("{n} selected")).size(17.0).strong().color(t.text));
+                ui.label(RichText::new(tf("{n} selected", &[("n", n.to_string())])).size(17.0).strong().color(t.text));
             } else {
-                ui.add_space(10.0);
+                // The menu button (three horizontal lines) next to the app name: opens the list with Settings.
+                let menu = menu_button(ui);
+                egui::Popup::menu(&menu).show(|ui| {
+                    ui.set_min_width(180.0);
+                    if ui.button(tr("Settings")).clicked() {
+                        st.settings = true;
+                        ui.close();
+                    }
+                });
+                ui.add_space(4.0);
                 // Number of photos shown under the title.
                 let total = app.session.visible_shared().1.len();
                 ui.vertical(|ui| {
                     ui.add_space(8.0);
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    ui.label(RichText::new("LightCraft").size(18.0).strong().color(t.text));
-                    ui.label(RichText::new(format!("{total} photos")).size(12.0).color(t.text_dim));
+                    ui.label(RichText::new(tr("LightCraft")).size(18.0).strong().color(t.text));
+                    ui.label(RichText::new(tf("{total} photos", &[("total", total.to_string())])).size(12.0).color(t.text_dim));
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     // Overflow menu ("...") of the library.
@@ -330,7 +375,7 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
                         st.browser = Some(Browser::open(&start_dir(), Purpose::Photos, st.browser_sort));
                     }
                     // "Select" starts the selection mode: several photos can be ticked, for example to delete them.
-                    if widgets::text_button(ui, "m_select", "Select", false).clicked() {
+                    if widgets::text_button(ui, "m_select", &tr("Select"), false).clicked() {
                         st.select_mode = true;
                     }
                 });
@@ -342,37 +387,45 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
 /// The overflow menu of the edit screen: redo, previous / next photo, reset, copy / paste edits, before / after.
 fn detail_menu(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     ui.set_min_width(180.0);
-    if ui.add_enabled(!app.session.redo.is_empty(), egui::Button::new("Redo")).clicked() {
+    if ui.add_enabled(!app.session.redo.is_empty(), egui::Button::new(tr("Redo"))).clicked() {
         let _ = app.run("edit.redo", json!({}));
         ui.close();
     }
-    if ui.button("Previous photo").clicked() {
+    if ui.button(tr("Export")).clicked() {
+        // the export settings of the Settings screen decide format, size and folder
+        match crate::settings::export_active(app) {
+            Ok(dir) => app.toast(ui.ctx(), tf("Exporting to {dir}", &[("dir", dir)])),
+            Err(e) => app.toast(ui.ctx(), e),
+        }
+        ui.close();
+    }
+    if ui.button(tr("Previous photo")).clicked() {
         let _ = app.run("library.previous", json!({}));
         ui.close();
     }
-    if ui.button("Next photo").clicked() {
+    if ui.button(tr("Next photo")).clicked() {
         let _ = app.run("library.next", json!({}));
         ui.close();
     }
     // Moves the photo to Recently Deleted (the file on the device is not touched).
-    if ui.button("Delete photo").clicked() {
+    if ui.button(tr("Delete photo")).clicked() {
         let _ = app.run("photo.delete", json!({}));
-        app.toast(ui.ctx(), "Moved to Recently Deleted");
+        app.toast(ui.ctx(), tr("Moved to Recently Deleted"));
         ui.close();
     }
-    if ui.button("Reset edits").clicked() {
+    if ui.button(tr("Reset edits")).clicked() {
         let _ = app.run("develop.reset", json!({}));
         ui.close();
     }
-    if ui.button("Copy edits").clicked() {
+    if ui.button(tr("Copy edits")).clicked() {
         let _ = app.run("develop.copy", json!({}));
         ui.close();
     }
-    if ui.button("Paste edits").clicked() {
+    if ui.button(tr("Paste edits")).clicked() {
         let _ = app.run("develop.paste", json!({}));
         ui.close();
     }
-    if ui.button("Before / After").clicked() {
+    if ui.button(tr("Before / After")).clicked() {
         let _ = app.run("view.beforeAfter", json!({}));
         ui.close();
     }
@@ -381,21 +434,21 @@ fn detail_menu(app: &mut LightcraftApp, ui: &mut egui::Ui) {
 /// The overflow menu of the library: grid style and Select all.
 fn grid_menu(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     ui.set_min_width(180.0);
-    if ui.button("Photo grid").clicked() {
+    if ui.button(tr("Photo grid")).clicked() {
         let _ = app.run("view.photoGrid", json!({}));
         ui.close();
     }
-    if ui.button("Square grid").clicked() {
+    if ui.button(tr("Square grid")).clicked() {
         let _ = app.run("view.squareGrid", json!({}));
         ui.close();
     }
     // Moves the selected photos (long-press a photo to select it) to Recently Deleted.
-    if ui.button("Delete selected photos").clicked() {
+    if ui.button(tr("Delete selected photos")).clicked() {
         let _ = app.run("photo.delete", json!({}));
-        app.toast(ui.ctx(), "Moved to Recently Deleted");
+        app.toast(ui.ctx(), tr("Moved to Recently Deleted"));
         ui.close();
     }
-    if ui.button("Select all").clicked() {
+    if ui.button(tr("Select all")).clicked() {
         let _ = app.run("library.selectAll", json!({}));
         ui.close();
     }
@@ -463,14 +516,14 @@ fn selection_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, ins
             ui.spacing_mut().item_spacing.x = 10.0;
             // Select all, or none when everything is ticked already.
             let all = n > 0 && n >= total;
-            if ui.add(egui::Button::new(if all { "Select none" } else { "Select all" }).min_size(vec2(120.0, 44.0))).clicked() {
+            if ui.add(egui::Button::new(tr(if all { "Select none" } else { "Select all" })).min_size(vec2(120.0, 44.0))).clicked() {
                 let _ = app.run(if all { "library.selectNone" } else { "library.selectAll" }, json!({}));
             }
             // Delete: moves the ticked photos to Recently Deleted (the files on the device are not touched).
-            let delete = egui::Button::new(RichText::new(format!("Delete {n}")).size(16.0).color(Color32::WHITE)).fill(t.reject).min_size(vec2(ui.available_width() - 16.0, 44.0));
+            let delete = egui::Button::new(RichText::new(tf("Delete {n}", &[("n", n.to_string())])).size(16.0).color(Color32::WHITE)).fill(t.reject).min_size(vec2(ui.available_width() - 16.0, 44.0));
             if ui.add_enabled(n > 0, delete).clicked() {
                 let _ = app.run("photo.delete", json!({}));
-                app.toast(ui.ctx(), format!("Moved {n} photo{} to Recently Deleted", if n == 1 { "" } else { "s" }));
+                app.toast(ui.ctx(), tf(if n == 1 { "Moved {n} photo to Recently Deleted" } else { "Moved {n} photos to Recently Deleted" }, &[("n", n.to_string())]));
                 st.select_mode = false;
             }
         });
@@ -576,7 +629,7 @@ fn tool_bar(ui: &mut egui::Ui, st: &mut State, inset_bottom: f32) {
             ui.painter().text(
                 egui::pos2(r.center().x, r.bottom() - 11.0),
                 egui::Align2::CENTER_CENTER,
-                label,
+                &tr(label),
                 egui::FontId::proportional(11.5),
                 if active { t.text } else { t.text_dim },
             );
@@ -606,7 +659,7 @@ fn tab_row(ui: &mut egui::Ui, st: &mut State) {
             ui.painter().text(
                 egui::pos2(r.center().x, r.bottom() - 11.0),
                 egui::Align2::CENTER_CENTER,
-                tab.label(),
+                &tr(tab.label()),
                 egui::FontId::proportional(12.0),
                 if active { t.text } else { t.text_dim },
             );
@@ -713,7 +766,7 @@ fn edit_sliders(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State) {
     let t = Tokens::get(ui.ctx());
     let Some(id) = app.session.active() else {
         ui.add_space(24.0);
-        ui.vertical_centered(|ui| ui.label(RichText::new("Select a photo to edit").color(t.text_dim)));
+        ui.vertical_centered(|ui| ui.label(RichText::new(tr("Select a photo to edit")).color(t.text_dim)));
         return;
     };
     let mut d = app.session.develop_of(id).unwrap_or_default();
@@ -738,50 +791,50 @@ fn edit_sliders(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State) {
             Tab::Light => {
                 // Auto sets exposure, contrast, highlights, shadows, whites and blacks from the photo.
                 tab_actions(ui, |ui| {
-                    if widgets::text_button(ui, "m_light_auto", "Auto", false).clicked() {
+                    if widgets::text_button(ui, "m_light_auto", &tr("Auto"), false).clicked() {
                         let _ = app.run("develop.auto", json!({}));
-                        app.toast(ui.ctx(), "Auto light applied");
+                        app.toast(ui.ctx(), tr("Auto light applied"));
                     }
-                    if widgets::text_button(ui, "m_light_reset", "Reset", false).clicked() {
+                    if widgets::text_button(ui, "m_light_reset", &tr("Reset"), false).clicked() {
                         let _ = app.run("develop.resetSection", json!({"section": "light"}));
                     }
                 });
                 list(app, ui, &d, LIGHT);
                 // The parametric tone curve: four sliders that bend the curve in its highlight, light,
                 // dark and shadow regions.
-                egui::CollapsingHeader::new(RichText::new("Tone curve").size(14.0)).default_open(false).show(ui, |ui| {
+                egui::CollapsingHeader::new(RichText::new(tr("Tone curve")).size(14.0)).default_open(false).show(ui, |ui| {
                     list(app, ui, &d, CURVE);
                 });
             }
             Tab::Color => {
                 // White balance: a preset list, an automatic button and the black & white switch.
                 tab_actions(ui, |ui| {
-                    egui::ComboBox::from_id_salt("m_wb_mode").selected_text(d.wb.mode.label()).width(140.0).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("m_wb_mode").selected_text(tr(d.wb.mode.label())).width(140.0).show_ui(ui, |ui| {
                         for mode in WbMode::ALL {
                             if mode == WbMode::Custom {
                                 continue;
                             }
-                            if ui.selectable_label(d.wb.mode == mode, mode.label()).clicked() {
+                            if ui.selectable_label(d.wb.mode == mode, tr(mode.label())).clicked() {
                                 let _ = app.run("develop.wb", json!({"mode": serde_json::to_value(mode).unwrap_or_default()}));
                             }
                         }
                     });
                     // Auto white balance: the engine estimates the neutral point of the photo.
-                    if widgets::text_button(ui, "m_wb_auto", "Auto", d.wb.mode == WbMode::Auto).clicked() {
+                    if widgets::text_button(ui, "m_wb_auto", &tr("Auto"), d.wb.mode == WbMode::Auto).clicked() {
                         let _ = app.run("develop.wb", json!({"mode": "auto"}));
-                        app.toast(ui.ctx(), "Auto white balance applied");
+                        app.toast(ui.ctx(), tr("Auto white balance applied"));
                     }
                     // Pick: the white balance selector. A ring appears on the photo; drag it onto something that
                     // should be white or grey and tap the check mark.
                     let picking = app.ui.tool == "wbPicker";
-                    if widgets::text_button(ui, "m_wb_pick", "Pick", picking).clicked() {
+                    if widgets::text_button(ui, "m_wb_pick", &tr("Pick"), picking).clicked() {
                         if picking {
                             app.ui.tool.clear();
                         } else if let Err(e) = app.run("tool.wbPicker", json!({})) {
                             app.toast(ui.ctx(), e);
                         }
                     }
-                    if widgets::text_button(ui, "m_bw", "B&W", lightcraft_ui_egui::is_bw(&d)).clicked() {
+                    if widgets::text_button(ui, "m_bw", &tr("B&W"), lightcraft_ui_egui::is_bw(&d)).clicked() {
                         let _ = app.run("develop.treatment", json!({}));
                     }
                 });
@@ -804,14 +857,14 @@ fn edit_sliders(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State) {
                 // Fujifilm and Panasonic raw conversions of the engine) or the chosen database profile.
                 let mut profile_on = d.optics.lens_profile;
                 ui.add_space(4.0);
-                if ui.checkbox(&mut profile_on, "Enable lens corrections").changed() {
+                if ui.checkbox(&mut profile_on, tr("Enable lens corrections")).changed() {
                     let _ = app.run("develop.merge", json!({"settings": {"optics": {"lens_profile": profile_on}}, "label": "Lens Corrections"}));
                 }
                 // Automatic chromatic aberration removal: the engine measures the lateral colour fringes of
                 // the picture itself; the Red/Cyan and Blue/Yellow sliders below fine-tune the estimate.
                 let mut auto_ca = d.optics.remove_ca;
                 ui.add_space(4.0);
-                if ui.checkbox(&mut auto_ca, "Remove chromatic aberration (automatic)").changed() {
+                if ui.checkbox(&mut auto_ca, tr("Remove chromatic aberration (automatic)")).changed() {
                     let _ = app.run("develop.merge", json!({"settings": {"optics": {"remove_ca": auto_ca}}, "label": "Remove CA"}));
                 }
                 ui.add_space(4.0);
@@ -841,7 +894,7 @@ fn lens_profile_ui(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State) {
 
     ui.horizontal(|ui| {
         ui.add_space(24.0);
-        ui.label(RichText::new("Lens profile").size(13.0).color(t.text_dim));
+        ui.label(RichText::new(tr("Lens profile")).size(13.0).color(t.text_dim));
     });
     ui.add_space(4.0);
     let mut chosen: Option<serde_json::Value> = None;
@@ -855,20 +908,20 @@ fn lens_profile_ui(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State) {
             .show_ui(ui, |ui| {
                 ui.set_min_width(260.0);
                 if !loaded {
-                    ui.label(RichText::new("No lens profiles loaded yet.").color(t.text_dim));
-                    ui.label(RichText::new("Load a lensfun database (XML files) below.").size(12.0).color(t.text_dim));
+                    ui.label(RichText::new(tr("No lens profiles loaded yet.")).color(t.text_dim));
+                    ui.label(RichText::new(tr("Load a lensfun database (XML files) below.")).size(12.0).color(t.text_dim));
                     return;
                 }
                 // The filter: every word must be in the maker or the model.
                 let filter_id = Id::new("m_lens_filter");
                 let mut filter: String = ui.data(|d| d.get_temp(filter_id)).unwrap_or_default();
-                ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Filter lenses...").desired_width(f32::INFINITY));
+                ui.add(egui::TextEdit::singleline(&mut filter).hint_text(tr("Filter lenses...")).desired_width(f32::INFINITY));
                 ui.data_mut(|d| d.insert_temp(filter_id, filter.clone()));
-                if ui.selectable_label(current.is_none() && !has_lens, "None").clicked() {
+                if ui.selectable_label(current.is_none() && !has_lens, tr("None")).clicked() {
                     chosen = Some(json!("none"));
                 }
                 if let Some(model) = &suggested {
-                    if ui.selectable_label(false, format!("Automatic: {model}")).clicked() {
+                    if ui.selectable_label(false, tf("Automatic: {model}", &[("model", model.clone())])).clicked() {
                         chosen = Some(json!("auto"));
                     }
                 }
@@ -886,9 +939,9 @@ fn lens_profile_ui(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State) {
                         }
                     }
                     if lenses.is_empty() {
-                        ui.label(RichText::new("No lens matches").color(t.text_dim));
+                        ui.label(RichText::new(tr("No lens matches")).color(t.text_dim));
                     } else if list["total"].as_u64().unwrap_or(0) > lenses.len() as u64 {
-                        ui.label(RichText::new("Type to narrow the list...").size(12.0).color(t.text_dim));
+                        ui.label(RichText::new(tr("Type to narrow the list...")).size(12.0).color(t.text_dim));
                     }
                 });
             });
@@ -901,12 +954,12 @@ fn lens_profile_ui(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State) {
     ui.add_space(6.0);
     // Loading profile files: opens the file browser on the XML files.
     tab_actions(ui, |ui| {
-        if widgets::text_button(ui, "m_lens_load", "Load profiles...", false).clicked() {
+        if widgets::text_button(ui, "m_lens_load", &tr("Load profiles..."), false).clicked() {
             st.browser = Some(Browser::open(&download_dir(), Purpose::LensProfiles, SortKey::NameAsc));
         }
         if loaded {
             let total = info["total"].as_u64().unwrap_or(0);
-            ui.label(RichText::new(format!("{total} lenses loaded")).size(12.0).color(t.text_dim));
+            ui.label(RichText::new(tf("{total} lenses loaded", &[("total", total.to_string())])).size(12.0).color(t.text_dim));
         }
     });
 }
@@ -1124,7 +1177,7 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
             ui.vertical(|ui| {
                 ui.add_space(8.0);
                 ui.spacing_mut().item_spacing.y = 0.0;
-                ui.label(RichText::new(b.purpose.title()).size(13.0).color(t.text_dim));
+                ui.label(RichText::new(tr(b.purpose.title())).size(13.0).color(t.text_dim));
                 let name = b.dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| b.dir.display().to_string());
                 ui.add(egui::Label::new(RichText::new(name).size(16.0).color(t.text)).truncate());
             });
@@ -1143,11 +1196,11 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 // The sort order: a button that opens the list of orders (newest first, name, size...).
-                let sort_button = widgets::text_button(ui, "m_b_sort", &format!("Sort: {}", b.sort.label()), false);
+                let sort_button = widgets::text_button(ui, "m_b_sort", &tf("Sort: {sort}", &[("sort", tr(b.sort.label()))]), false);
                 egui::Popup::menu(&sort_button).show(|ui| {
                     ui.set_min_width(200.0);
                     for key in SortKey::ALL {
-                        if ui.selectable_label(b.sort == key, key.label()).clicked() {
+                        if ui.selectable_label(b.sort == key, tr(key.label())).clicked() {
                             b.sort = key;
                             b.sort_entries();
                             // the thumbnails are asked for again in the new order
@@ -1161,7 +1214,7 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
                     b.grid = !b.grid;
                 }
                 // "Select all" selects every file of the folder, or clears the selection when all are selected.
-                if b.files().next().is_some() && widgets::text_button(ui, "m_b_all", "Select all", false).clicked() {
+                if b.files().next().is_some() && widgets::text_button(ui, "m_b_all", &tr("Select all"), false).clicked() {
                     let all: Vec<_> = b.files().map(|e| e.path.clone()).collect();
                     if all.iter().all(|p| b.selected.contains(p)) {
                         b.selected.clear();
@@ -1181,14 +1234,17 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
             ui.horizontal_centered(|ui| {
                 ui.add_space(16.0);
                 // Cancel leaves the browser without importing anything.
-                if ui.add(egui::Button::new(RichText::new("Cancel").size(16.0)).min_size(vec2(96.0, 44.0))).clicked() {
+                if ui.add(egui::Button::new(RichText::new(tr("Cancel")).size(16.0)).min_size(vec2(96.0, 44.0))).clicked() {
                     close = true;
                 }
-                let (noun, verb) = match b.purpose {
-                    Purpose::Photos => ("photo", "Import"),
-                    Purpose::LensProfiles => ("file", "Load"),
+                let label = match (b.purpose, n) {
+                    (Purpose::Photos, 0) => tr("Import this folder"),
+                    (Purpose::Photos, 1) => tf("Import {n} photo", &[("n", n.to_string())]),
+                    (Purpose::Photos, _) => tf("Import {n} photos", &[("n", n.to_string())]),
+                    (Purpose::LensProfiles, 0) => tr("Load this folder"),
+                    (Purpose::LensProfiles, 1) => tf("Load {n} file", &[("n", n.to_string())]),
+                    (Purpose::LensProfiles, _) => tf("Load {n} files", &[("n", n.to_string())]),
                 };
-                let label = if n > 0 { format!("{verb} {n} {noun}{}", if n == 1 { "" } else { "s" }) } else { format!("{verb} this folder") };
                 let enabled = n > 0 || b.entries.iter().any(|e| !e.dir) || b.entries.iter().any(|e| e.dir);
                 let btn = egui::Button::new(RichText::new(label).size(16.0).color(Color32::WHITE)).fill(t.accent).min_size(vec2(ui.available_width() - 16.0, 44.0));
                 if ui.add_enabled(enabled, btn).clicked() {
@@ -1207,15 +1263,15 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
             ui.add_space(48.0);
             ui.vertical_centered(|ui| {
                 ui.set_max_width(ui.available_width() - 48.0);
-                ui.label(RichText::new("LightCraft needs access to the device's files to add photos.").size(16.0).color(t.text));
+                ui.label(RichText::new(tr("LightCraft needs access to the device's files to add photos.")).size(16.0).color(t.text));
                 ui.add_space(8.0);
-                ui.label(RichText::new("Allow it in the settings page that opens, then come back.").size(13.0).color(t.text_dim));
+                ui.label(RichText::new(tr("Allow it in the settings page that opens, then come back.")).size(13.0).color(t.text_dim));
                 ui.add_space(16.0);
-                if ui.add(egui::Button::new(RichText::new("Allow file access").color(Color32::WHITE)).fill(t.accent).min_size(vec2(220.0, 44.0))).clicked() {
+                if ui.add(egui::Button::new(RichText::new(tr("Allow file access")).color(Color32::WHITE)).fill(t.accent).min_size(vec2(220.0, 44.0))).clicked() {
                     (platform().request_storage_access)();
                 }
                 ui.add_space(8.0);
-                if ui.add(egui::Button::new("Cancel").min_size(vec2(220.0, 44.0))).clicked() {
+                if ui.add(egui::Button::new(tr("Cancel")).min_size(vec2(220.0, 44.0))).clicked() {
                     close = true;
                 }
             });
@@ -1228,7 +1284,7 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
         }
         if b.entries.is_empty() {
             ui.add_space(24.0);
-            ui.vertical_centered(|ui| ui.label(RichText::new(if b.purpose == Purpose::Photos { "No folders or photos here" } else { "No folders or XML files here" }).color(t.text_dim)));
+            ui.vertical_centered(|ui| ui.label(RichText::new(tr(if b.purpose == Purpose::Photos { "No folders or photos here" } else { "No folders or XML files here" })).color(t.text_dim)));
         }
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
@@ -1285,7 +1341,7 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
                 match failure {
                     Some(e) => app.toast(ui.ctx(), e),
                     None => {
-                        app.toast(ui.ctx(), format!("Loaded {lenses} lens profiles"));
+                        app.toast(ui.ctx(), tf("Loaded {n} lens profiles", &[("n", lenses.to_string())]));
                         close = true;
                     }
                 }

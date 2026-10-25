@@ -1942,6 +1942,7 @@ dependencies = [
  "lightcraft-raw",
  "lightcraft-ui-egui",
  "log",
+ "serde",
  "serde_json",
 ]
 

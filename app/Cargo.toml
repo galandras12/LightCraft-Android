@@ -28,6 +28,7 @@ lightcraft-catalog = { path = "../third_party/lightcraft/crates/catalog" }
 # The UI toolkit; the version must match the one the upstream UI uses.
 egui = "0.36"
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 log = "0.4"
 
 # Android only: the window / event loop (eframe + wgpu), the native activity glue, logging to

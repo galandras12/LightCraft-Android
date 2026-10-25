@@ -38,6 +38,7 @@ fn main() {
         storage_access: || true,
         request_storage_access: || {},
         storage_root: photos.clone(),
+        system_language: || "en".to_string(),
     });
     for (name, w, h, ppp) in [("phone", 393.0, 873.0, 2.75), ("tablet", 1280.0, 800.0, 2.0)] {
         // an empty library first: the welcome screen

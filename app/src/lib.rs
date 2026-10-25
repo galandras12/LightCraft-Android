@@ -5,7 +5,11 @@
 /// The phone / tablet layout (library, edit screen, file browser).
 pub mod crop;
 pub mod histogram;
+/// Translation of the strings written in this crate.
+pub mod i18n;
 pub mod mobile;
+/// The Settings screen and the preferences behind it.
+pub mod settings;
 /// The welcome screen of an empty library.
 pub mod welcome;
 
