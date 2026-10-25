@@ -288,6 +288,31 @@ fn menu_button(ui: &mut egui::Ui) -> egui::Response {
     response
 }
 
+/// The undo button of the edit screen's top bar: an arrow that turns back on itself. Drawn here (original artwork);
+/// dimmed while there is nothing to undo.
+fn undo_button(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
+    let t = Tokens::get(ui.ctx());
+    let (rect, response) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::click());
+    let response = response.on_hover_text(tr("Undo"));
+    let color = if !enabled { t.icon.gamma_multiply(0.4) } else if response.is_pointer_button_down_on() { t.text } else { t.icon };
+    let c = rect.center();
+    let p = ui.painter();
+    // the path: along the top to the right, round the bend, and back along the bottom
+    let (top, bottom, bend) = (c.y - 5.0, c.y + 7.0, c.x + 3.0);
+    let mid = (top + bottom) / 2.0;
+    let radius = (bottom - top) / 2.0;
+    let mut points = vec![egui::pos2(c.x - 3.0, top), egui::pos2(bend, top)];
+    for step in 0..=10 {
+        let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * step as f32 / 10.0;
+        points.push(egui::pos2(bend + radius * a.cos(), mid + radius * a.sin()));
+    }
+    points.push(egui::pos2(c.x - 9.0, bottom));
+    p.add(egui::Shape::line(points, Stroke::new(2.6, color)));
+    // the arrow head at the left end of the top line
+    p.add(egui::Shape::convex_polygon(vec![egui::pos2(c.x - 11.0, top), egui::pos2(c.x - 3.0, top - 6.0), egui::pos2(c.x - 3.0, top + 6.0)], color, Stroke::NONE));
+    response
+}
+
 /// The export button of the top bars: a frame with an arrow leaving it to the right. Drawn here (original artwork) because
 /// the upstream icon set has no export icon.
 fn export_button(ui: &mut egui::Ui, id: &str) -> egui::Response {
@@ -385,9 +410,9 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
                             Err(e) => app.toast(ui.ctx(), e),
                         }
                     }
-                    // Undo: a text button, disabled look when there is nothing to undo.
+                    // Undo: a U-turn arrow, dimmed when there is nothing to undo.
                     let can_undo = !app.session.undo.is_empty();
-                    if widgets::text_button(ui, "m_undo", &tr("Undo"), false).clicked() && can_undo {
+                    if undo_button(ui, can_undo).clicked() && can_undo {
                         let _ = app.run("edit.undo", json!({}));
                     }
                     // Histogram: shows or hides the histogram card over the photo (its chips switch the display).

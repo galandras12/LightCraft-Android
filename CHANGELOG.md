@@ -41,6 +41,7 @@ fixed on that day. Entries are written in English.
 
 ### Changed
 
+- The **Undo** button of the edit screen is now a U-turn arrow icon (dimmed when there is nothing to undo).
 - The Add photos browser has a second row under the top bar for Sort, Grid or List and Select all.
 - The README install section points to the Releases page, and a changelog was added.
 
