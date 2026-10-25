@@ -74,6 +74,7 @@ pub(crate) fn platform() -> &'static Platform {
 
 /// Switches a `LightcraftApp` to the phone / tablet layout and hides the desktop filmstrip.
 pub fn install(app: &mut LightcraftApp) {
+    crate::settings::register_fonts();
     app.mobile_layout = Some(layout);
     app.ui.filmstrip = false;
 }
@@ -239,12 +240,15 @@ fn layout(app: &mut LightcraftApp, ui: &mut egui::Ui) {
     crate::settings::poll_media_scan(app);
     let detail = app.ui.view == ViewMode::Detail;
     let wide = ui.max_rect().width() >= WIDE;
-    if st.settings {
-        if crate::settings::screen(app, ui, insets) {
-            st.settings = false;
-        }
-    } else if st.browser.is_some() {
+    if st.browser.is_some() {
         browser_screen(app, ui, &mut st, insets);
+    } else if st.settings {
+        match crate::settings::screen(app, ui, insets) {
+            Some(crate::settings::Action::Close) => st.settings = false,
+            // the file browser takes the screen, then returns to the Settings
+            Some(crate::settings::Action::PickWatermarkImage) => st.browser = Some(Browser::open(&start_dir(), Purpose::WatermarkImage, SortKey::NameAsc)),
+            None => {}
+        }
     } else {
         top_bar(app, ui, &mut st, detail, insets);
         if detail {
@@ -1125,6 +1129,8 @@ enum Purpose {
     Photos,
     /// Loading lens profile files (lensfun XML).
     LensProfiles,
+    /// Choosing the picture of the watermark.
+    WatermarkImage,
 }
 
 impl Purpose {
@@ -1133,6 +1139,7 @@ impl Purpose {
         match self {
             Purpose::Photos => "Add photos",
             Purpose::LensProfiles => "Load lens profiles",
+            Purpose::WatermarkImage => "Choose a picture",
         }
     }
 
@@ -1141,6 +1148,10 @@ impl Purpose {
         match self {
             Purpose::Photos => is_photo(name),
             Purpose::LensProfiles => name.to_ascii_lowercase().ends_with(".xml"),
+            Purpose::WatermarkImage => {
+                let lower = name.to_ascii_lowercase();
+                [".png", ".jpg", ".jpeg", ".webp"].iter().any(|e| lower.ends_with(e))
+            }
         }
     }
 }
@@ -1334,8 +1345,9 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
                     (Purpose::LensProfiles, 0) => tr("Load this folder"),
                     (Purpose::LensProfiles, 1) => tf("Load {n} file", &[("n", n.to_string())]),
                     (Purpose::LensProfiles, _) => tf("Load {n} files", &[("n", n.to_string())]),
+                    (Purpose::WatermarkImage, _) => tr("Use this picture"),
                 };
-                let enabled = n > 0 || b.entries.iter().any(|e| !e.dir) || b.entries.iter().any(|e| e.dir);
+                let enabled = if b.purpose == Purpose::WatermarkImage { n > 0 } else { n > 0 || b.entries.iter().any(|e| !e.dir) || b.entries.iter().any(|e| e.dir) };
                 let btn = egui::Button::new(RichText::new(label).size(16.0).color(Color32::WHITE)).fill(t.accent).min_size(vec2(ui.available_width() - 16.0, 44.0));
                 if ui.add_enabled(enabled, btn).clicked() {
                     import = Some(if n > 0 {
@@ -1418,6 +1430,16 @@ fn browser_screen(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, in
                 }
                 Err(e) => app.toast(ui.ctx(), e),
             },
+            // the watermark picture goes to the settings
+            Purpose::WatermarkImage => {
+                if let Some(path) = paths.into_iter().find(|p| std::path::Path::new(p).is_file()) {
+                    crate::settings::update(|prefs| {
+                        prefs.watermark.image = path;
+                        prefs.watermark.use_image = true;
+                    });
+                    close = true;
+                }
+            }
             // lens profile files go to the lens database
             Purpose::LensProfiles => {
                 let mut lenses = 0;

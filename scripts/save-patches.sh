@@ -29,3 +29,4 @@ save 0004-lens-profiles crates/develop/src/settings.rs crates/pipeline/src/optic
 save 0005-touch-selectors crates/ui-egui/src/panels/detail.rs crates/ui-egui/src/panels/masking.rs
 save 0006-more-languages crates/ui-egui/src/i18n.rs crates/ui-egui/locales/hr.json crates/ui-egui/locales/ro.json crates/ui-egui/locales/hu.json crates/ui-egui/locales/sk.json crates/ui-egui/locales/no.json
 save 0007-touch-edited-badge crates/ui-egui/src/panels/grid.rs
+save 0008-watermark-mosaic crates/engine/src/export.rs crates/engine/src/text.rs crates/engine/src/lib.rs crates/engine/src/watermark_tile.rs

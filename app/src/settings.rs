@@ -48,6 +48,63 @@ pub struct Prefs {
     pub write_copyright: bool,
     /// Add the creator and the copyright notice to photos when they are imported.
     pub copyright_on_import: bool,
+    /// The watermark written into exported photos.
+    pub watermark: WmPrefs,
+}
+
+/// The watermark settings.
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct WmPrefs {
+    /// Draw the watermark into exported photos.
+    pub enabled: bool,
+    /// Use a picture (`image`) instead of the text.
+    pub use_image: bool,
+    /// The text of the watermark.
+    pub text: String,
+    /// Path of the picture (PNG with transparency, JPEG...).
+    pub image: String,
+    /// Where a single watermark sits: `bottomLeft`, `topLeft`, `bottomRight`, `topRight`, `bottom` or `top`.
+    pub position: String,
+    /// Repeat the watermark over the whole photo as a mosaic.
+    pub tile: bool,
+    /// The direction of the text (the rows of a mosaic follow it): `horizontal`, `vertical`, `diagonalUp` or `diagonalDown`.
+    pub direction: String,
+    /// The gap between the tiles of a mosaic, as a fraction of the short edge.
+    pub gap: f32,
+    /// The colour of the text.
+    pub color: [u8; 3],
+    /// Opacity, 0.05 to 1.
+    pub opacity: f32,
+    /// Text height as a fraction of the short edge.
+    pub size: f32,
+    /// Width of the picture as a fraction of the photo's width.
+    pub image_width: f32,
+    /// The text style (see [`FONTS`]).
+    pub font: String,
+    /// A soft dark shadow under the text.
+    pub shadow: bool,
+}
+
+impl Default for WmPrefs {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            use_image: false,
+            text: "© Your Name".into(),
+            image: String::new(),
+            position: "bottomRight".into(),
+            tile: false,
+            direction: "horizontal".into(),
+            gap: 0.12,
+            color: [255; 3],
+            opacity: 0.6,
+            size: 0.05,
+            image_width: 0.25,
+            font: String::new(),
+            shadow: true,
+        }
+    }
 }
 
 impl Default for Prefs {
@@ -67,6 +124,7 @@ impl Default for Prefs {
             copyright: String::new(),
             write_copyright: true,
             copyright_on_import: false,
+            watermark: WmPrefs::default(),
         }
     }
 }
@@ -160,15 +218,15 @@ fn choice(ui: &mut egui::Ui, id: &str, current: &str, items: &[(&str, String)]) 
     picked
 }
 
-/// The Settings screen. Returns true when it should be closed (the back arrow was tapped).
-pub fn screen(app: &mut LightcraftApp, ui: &mut egui::Ui, insets: Insets) -> bool {
+/// The Settings screen. Returns what the layout should do next (the back arrow was tapped, or the file browser is wanted).
+pub fn screen(app: &mut LightcraftApp, ui: &mut egui::Ui, insets: Insets) -> Option<Action> {
     let t_ = Tokens::get(ui.ctx());
-    let mut close = false;
+    let mut action = None;
     egui::Panel::top("m_set_top").exact_size(BAR_H + insets.top).frame(bar_frame(&t_)).show(ui, |ui| {
         ui.add_space(insets.top);
         ui.horizontal_centered(|ui| {
             if icon_btn(ui, "m_set_back", Icon::Back, false, true, "Back").clicked() {
-                close = true;
+                action = Some(Action::Close);
             }
             ui.label(RichText::new(tr("Settings")).size(18.0).strong().color(t_.text));
         });
@@ -180,11 +238,14 @@ pub fn screen(app: &mut LightcraftApp, ui: &mut egui::Ui, insets: Insets) -> boo
             language_section(ui, &mut p);
             export_section(ui, &mut p);
             copyright_section(app, ui, &mut p);
+            if watermark_section(ui, &mut p) {
+                action = Some(Action::PickWatermarkImage);
+            }
             ui.add_space(insets.bottom + 24.0);
             update(|stored| *stored = p);
         });
     });
-    close
+    action
 }
 
 /// The language choice: Automatic (the system language) or one of the shipped languages.
@@ -264,6 +325,142 @@ fn copyright_section(app: &mut LightcraftApp, ui: &mut egui::Ui, p: &mut Prefs) 
     }
 }
 
+/// The watermark settings: text or picture, place or mosaic, direction, colour, opacity, size and text style, with a
+/// small preview. Returns true when the watermark picture should be chosen with the file browser.
+fn watermark_section(ui: &mut egui::Ui, p: &mut Prefs) -> bool {
+    let t_ = Tokens::get(ui.ctx());
+    let mut pick_image = false;
+    heading(ui, "Watermark");
+    let w = &mut p.watermark;
+    ui.checkbox(&mut w.enabled, tr("Add a watermark to exported photos"));
+    if !w.enabled {
+        return false;
+    }
+    // text or picture
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut w.use_image, false, tr("Text"));
+        ui.selectable_value(&mut w.use_image, true, tr("Picture"));
+    });
+    ui.add_space(4.0);
+    if w.use_image {
+        let name = std::path::Path::new(&w.image).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| tr("No picture chosen"));
+        ui.label(RichText::new(name).color(t_.text_dim));
+        if ui.button(tr("Choose a picture...")).clicked() {
+            pick_image = true;
+        }
+        ui.label(RichText::new(tr("A PNG with a transparent background works best.")).size(12.0).color(t_.text_dim));
+        row(ui, "Width", |ui| {
+            let mut v = f64::from(w.image_width) * 100.0;
+            if ui.add(egui::Slider::new(&mut v, 5.0..=100.0).suffix(" %").integer()).changed() {
+                w.image_width = (v / 100.0) as f32;
+            }
+        });
+    } else {
+        ui.add(egui::TextEdit::singleline(&mut w.text).hint_text("© 2026 Your Name").desired_width(f32::INFINITY));
+        ui.add_space(4.0);
+        let fonts: Vec<(&str, String)> = FONTS.iter().map(|(c, l)| (*c, tr(l))).collect();
+        row(ui, "Text style", |ui| {
+            if let Some(code) = choice(ui, "m_wm_font", &w.font, &fonts) {
+                w.font = code;
+            }
+        });
+        row(ui, "Text size", |ui| {
+            let mut v = f64::from(w.size) * 100.0;
+            if ui.add(egui::Slider::new(&mut v, 1.0..=20.0).suffix(" %").integer()).changed() {
+                w.size = (v / 100.0) as f32;
+            }
+        });
+        // the colour: a few swatches and the full colour picker
+        row(ui, "Colour", |ui| {
+            ui.color_edit_button_srgb(&mut w.color);
+            for swatch in [[255u8, 255, 255], [0, 0, 0], [200, 200, 200], [230, 60, 60], [250, 200, 40]] {
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+                ui.painter().rect_filled(rect, 4.0, egui::Color32::from_rgb(swatch[0], swatch[1], swatch[2]));
+                ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(if w.color == swatch { 2.5 } else { 1.0 }, t_.text_dim), egui::StrokeKind::Inside);
+                if resp.clicked() {
+                    w.color = swatch;
+                }
+            }
+        });
+        ui.checkbox(&mut w.shadow, tr("Soft shadow under the text"));
+    }
+    row(ui, "Opacity", |ui| {
+        let mut v = f64::from(w.opacity) * 100.0;
+        if ui.add(egui::Slider::new(&mut v, 5.0..=100.0).suffix(" %").integer()).changed() {
+            w.opacity = (v / 100.0) as f32;
+        }
+    });
+    // direction
+    let directions: Vec<(&str, String)> = vec![
+        ("horizontal", tr("Horizontal")),
+        ("vertical", tr("Vertical")),
+        ("diagonalUp", tr("Diagonal, rising")),
+        ("diagonalDown", tr("Diagonal, falling")),
+    ];
+    row(ui, "Direction", |ui| {
+        if let Some(code) = choice(ui, "m_wm_direction", &w.direction, &directions) {
+            w.direction = code;
+        }
+    });
+    // one mark in a place, or a mosaic over the whole photo
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut w.tile, false, tr("One watermark"));
+        ui.selectable_value(&mut w.tile, true, tr("Mosaic"));
+    });
+    ui.add_space(4.0);
+    if w.tile {
+        row(ui, "Space between", |ui| {
+            let mut v = f64::from(w.gap) * 100.0;
+            if ui.add(egui::Slider::new(&mut v, 0.0..=50.0).suffix(" %").integer()).changed() {
+                w.gap = (v / 100.0) as f32;
+            }
+        });
+    } else {
+        let places: Vec<(&str, String)> = vec![
+            ("bottomLeft", tr("Bottom left")),
+            ("topLeft", tr("Top left")),
+            ("bottomRight", tr("Bottom right")),
+            ("topRight", tr("Top right")),
+            ("bottom", tr("Bottom middle")),
+            ("top", tr("Top middle")),
+        ];
+        row(ui, "Position", |ui| {
+            if let Some(code) = choice(ui, "m_wm_position", &w.position, &places) {
+                w.position = code;
+            }
+        });
+    }
+    watermark_preview(ui, w);
+    pick_image
+}
+
+/// A small sample picture with the watermark drawn on it as the export would draw it.
+fn watermark_preview(ui: &mut egui::Ui, w: &WmPrefs) {
+    let Some(json) = watermark_json(w) else { return };
+    let Ok(mark) = serde_json::from_value::<lightcraft_engine::export::Watermark>(json) else { return };
+    // the sample: a sky fading to dark hills
+    let (sw, sh) = (480usize, 320usize);
+    let mut img = lightcraft_raster::Rgba8::from_fn(sw, sh, |x, y| {
+        let t = y as f32 / sh as f32;
+        let hill = 0.62 + 0.08 * ((x as f32 / 70.0).sin() + 0.5 * (x as f32 / 23.0).sin());
+        if t > hill {
+            [28, 44 + (t * 60.0) as u8, 36, 255]
+        } else {
+            [(110.0 + 120.0 * t) as u8, (150.0 + 60.0 * t) as u8, (210.0 - 40.0 * t) as u8, 255]
+        }
+    });
+    // the sample is smaller than an export: the text keeps its share of the short edge
+    lightcraft_engine::export::draw_watermark(&mut img, &mark);
+    let pixels: Vec<u8> = img.data.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect();
+    let image = egui::ColorImage::from_rgba_unmultiplied([sw, sh], &pixels);
+    let key = egui::Id::new("m_wm_preview");
+    let texture = ui.ctx().load_texture("m_wm_preview", image, egui::TextureOptions::LINEAR);
+    ui.data_mut(|d| d.insert_temp(key, texture.id()));
+    ui.add_space(8.0);
+    ui.add(egui::Image::new(&texture).max_width(ui.available_width()).corner_radius(6.0));
+}
+
 /// Which photos a group export takes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
@@ -283,6 +480,60 @@ pub fn photos_of(app: &mut LightcraftApp, scope: Scope) -> Vec<lightcraft_catalo
         Scope::Selected => visible.iter().copied().filter(|id| app.session.selection.ids.contains(id)).collect(),
         Scope::Edited => visible.iter().copied().filter(|id| app.session.catalog.photo(*id).is_some_and(|p| p.is_edited())).collect(),
     }
+}
+
+/// The text styles of the watermark: (name registered with the engine, label). The first is the engine's own
+/// Inter SemiBold; the others are bundled with the app (`app/fonts`, `register_fonts`).
+pub const FONTS: [(&str, &str); 6] =
+    [("", "Modern"), ("clean", "Clean"), ("heavy", "Heavy"), ("serif", "Serif"), ("serif-italic", "Serif italic"), ("mono", "Monospace")];
+
+/// Registers the bundled text styles with the engine. Called once at start-up.
+pub fn register_fonts() {
+    lightcraft_engine::text::register_font("clean", include_bytes!("../../third_party/lightcraft/assets/fonts/Inter-Regular.ttf"));
+    lightcraft_engine::text::register_font("heavy", include_bytes!("../fonts/Inter-Black.otf"));
+    lightcraft_engine::text::register_font("serif", include_bytes!("../fonts/LiberationSerif-Regular.ttf"));
+    lightcraft_engine::text::register_font("serif-italic", include_bytes!("../fonts/LiberationSerif-BoldItalic.ttf"));
+    lightcraft_engine::text::register_font("mono", include_bytes!("../fonts/JetBrainsMono-Medium.ttf"));
+}
+
+/// The watermark as the engine's `watermark` export parameter; `None` when it is off or has nothing to draw.
+pub fn watermark_json(w: &WmPrefs) -> Option<serde_json::Value> {
+    if !w.enabled {
+        return None;
+    }
+    let image = w.use_image && !w.image.trim().is_empty();
+    if !image && w.text.trim().is_empty() {
+        return None;
+    }
+    // the direction turns the text; the engine takes degrees clockwise
+    let angle = match w.direction.as_str() {
+        "vertical" => -90.0,
+        "diagonalUp" => -45.0,
+        "diagonalDown" => 45.0,
+        _ => 0.0,
+    };
+    Some(json!({
+        "text": if image { "" } else { w.text.trim() },
+        "image": if image { w.image.trim() } else { "" },
+        "imageWidth": w.image_width.clamp(0.01, 1.0),
+        "size": w.size.clamp(0.005, 0.5),
+        "opacity": w.opacity.clamp(0.0, 1.0),
+        "color": w.color,
+        "anchor": w.position,
+        "angle": angle,
+        "tile": w.tile,
+        "gap": w.gap.clamp(0.0, 1.0),
+        "font": w.font,
+        "shadow": w.shadow,
+    }))
+}
+
+/// What the Settings screen asks the layout to do.
+pub enum Action {
+    /// Leave the Settings screen.
+    Close,
+    /// Open the file browser to choose the watermark picture.
+    PickWatermarkImage,
 }
 
 /// The export folder and the start time of an export whose files the gallery apps have not been told about yet.
@@ -352,6 +603,9 @@ pub fn export_ids(app: &mut LightcraftApp, ids: &[lightcraft_catalog::PhotoId]) 
     });
     if p.long_edge > 0 {
         params["longEdge"] = json!(p.long_edge);
+    }
+    if let Some(wm) = watermark_json(&p.watermark) {
+        params["watermark"] = wm;
     }
     // the gallery apps skip a folder that holds a `.nomedia` file
     let nomedia = std::path::Path::new(&p.folder).join(".nomedia");

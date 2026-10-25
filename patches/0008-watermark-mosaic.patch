@@ -1,0 +1,415 @@
+Android port: mosaic and turned watermarks, text styles.
+
+The watermark gets `font` (a style the host registers with `text::register_font`), `tile` (a mosaic over the whole photo,
+rows offset by half a tile), `angle` (any turn, degrees clockwise) and `gap` (space between tiles). A mosaic or a turn by other
+than quarter turns is drawn from a sprite by the inverse turn (`watermark_tile.rs`), so the edges stay smooth; whole quarter
+turns without a mosaic take the old path. The text can be set in a registered font, with Inter behind it.
+diff --git a/crates/engine/src/export.rs b/crates/engine/src/export.rs
+index bfeade5..9b21084 100644
+--- a/crates/engine/src/export.rs
++++ b/crates/engine/src/export.rs
+@@ -307,6 +307,15 @@ pub struct Watermark {
+     pub image: String,
+     /// The graphic's width as a fraction of the photo's width.
+     pub image_width: f32,
++    /// The text style: a name the host registered with [`crate::text::register_font`] (empty = Inter SemiBold).
++    pub font: String,
++    /// Repeat the watermark over the whole photo as a mosaic, in rows that are offset by half a tile.
++    pub tile: bool,
++    /// Extra rotation in degrees clockwise (any angle, -180..180), added to `rotation`. With a mosaic the whole
++    /// pattern turns, so the rows run along this direction.
++    pub angle: f32,
++    /// The gap between the tiles of a mosaic, as a fraction of the short edge.
++    pub gap: f32,
+     /// The colour space the photo is in (set by the encoder; the graphic is converted into it).
+     #[serde(skip)]
+     pub target: Option<OutputSpace>,
+@@ -327,6 +336,10 @@ impl Default for Watermark {
+             shadow: true,
+             image: String::new(),
+             image_width: 0.2,
++            font: String::new(),
++            tile: false,
++            angle: 0.0,
++            gap: 0.12,
+             target: None,
+         }
+     }
+@@ -432,6 +445,20 @@ fn watermark_coverage(
+     floor_scale: f32,
+     mut blend_px: impl FnMut(usize, usize, f32, [u8; 3]),
+ ) {
++    // a mosaic or a turn by other than quarter turns is drawn from a sprite (see `watermark_tile`)
++    let turn_total = f32::from(wm.rotation) + wm.angle;
++    if wm.tile || turn_total.rem_euclid(90.0).abs() > 1e-3 && (90.0 - turn_total.rem_euclid(90.0)).abs() > 1e-3 {
++        crate::watermark_tile::coverage(width, height, wm, craft, floor_scale, blend_px);
++        return;
++    }
++    // whole quarter turns: the angle folds into `rotation` and the box is placed as before
++    let folded;
++    let wm = if wm.angle != 0.0 {
++        folded = Watermark { rotation: (turn_total.round() as i32).rem_euclid(360) as u16, angle: 0.0, ..wm.clone() };
++        &folded
++    } else {
++        wm
++    };
+     if !wm.image.trim().is_empty() {
+         logo_coverage(width, height, wm, blend_px);
+         return;
+@@ -442,7 +469,7 @@ fn watermark_coverage(
+     }
+     let short = width.min(height) as f32;
+     let px = (wm.size.clamp(0.005, 0.5) * short).max(6.0 * floor_scale);
+-    let Some(layout) = crate::text::TextLayout::new(text, px, wm.vertical, craft) else { return };
++    let Some(layout) = crate::text::TextLayout::with_font(text, px, wm.vertical, craft, crate::text::registered_font(&wm.font)) else { return };
+     let (tw, th) = (layout.width, layout.height);
+     // laid out unturned in a tw × th box, placed by the box it becomes
+     let turns = wm.quarter_turns();
+@@ -762,7 +789,7 @@ pub fn apple_photos_unsupported() -> Option<&'static str> {
+ /// The keys of a `watermark` object ([`Watermark`], camelCase). `inset` sets `insetX` and `insetY`
+ /// together (what versions before the two margins wrote); either of those, when given, wins.
+ pub const WATERMARK_PARAMS: &[&str] =
+-    &["text", "vertical", "size", "opacity", "anchor", "insetX", "insetY", "inset", "rotation", "color", "shadow", "image", "imageWidth"];
++    &["text", "vertical", "size", "opacity", "anchor", "insetX", "insetY", "inset", "rotation", "color", "shadow", "image", "imageWidth", "font", "tile", "angle", "gap"];
+ 
+ /// Text height as a fraction of the short edge: the range the renderer draws without clamping.
+ pub const WATERMARK_SIZE_RANGE: (f32, f32) = (0.005, 0.5);
+@@ -1041,16 +1068,18 @@ impl ExportOptions {
+                 continue;
+             }
+             match k.as_str() {
+-                "text" | "image" => {
++                "text" | "image" | "font" => {
+                     v.as_str().ok_or_else(|| bad(format!("`watermark.{k}` must be a string")))?;
+                 }
+-                "vertical" | "shadow" => {
++                "vertical" | "shadow" | "tile" => {
+                     v.as_bool().ok_or_else(|| bad(format!("`watermark.{k}` must be true or false")))?;
+                 }
+                 "size" => frac(k, v, WATERMARK_SIZE_RANGE, "fraction of the short edge")?,
+                 "opacity" => frac(k, v, (0.0, 1.0), "0 = invisible, 1 = solid")?,
+                 "insetX" | "insetY" | "inset" => frac(k, v, WATERMARK_INSET_RANGE, "fraction of the short edge")?,
+                 "imageWidth" => frac(k, v, WATERMARK_IMAGE_WIDTH_RANGE, "fraction of the photo's width")?,
++                "angle" => frac(k, v, (-180.0, 180.0), "degrees clockwise")?,
++                "gap" => frac(k, v, (0.0, 1.0), "fraction of the short edge")?,
+                 "rotation" => {
+                     if !matches!(whole(v), Some(0 | 90 | 180 | 270)) {
+                         return Err(bad("`watermark.rotation` must be 0, 90, 180 or 270 (degrees clockwise)".into()));
+diff --git a/crates/engine/src/lib.rs b/crates/engine/src/lib.rs
+index 323ed90..c3b2f32 100644
+--- a/crates/engine/src/lib.rs
++++ b/crates/engine/src/lib.rs
+@@ -80,6 +80,7 @@ pub mod slideshow_export;
+ pub mod smart;
+ pub mod sync;
+ pub mod text;
++mod watermark_tile;
+ mod view;
+ pub mod walk;
+ 
+diff --git a/crates/engine/src/text.rs b/crates/engine/src/text.rs
+index 1297424..9f03652 100644
+--- a/crates/engine/src/text.rs
++++ b/crates/engine/src/text.rs
+@@ -20,9 +20,31 @@ pub const MAX_CHARS: usize = 4000;
+ /// offered). Without craft-fonts that is Inter alone, and CJK characters draw as Inter's
+ /// missing-glyph box.
+ pub fn faces(craft: &'static [crate::fonts::CraftFont]) -> Vec<FontRef<'static>> {
++    faces_with(None, craft)
++}
++
++/// Extra text styles a host registers by name (the Android port ships a few: serif, mono, heavy...). The watermark's
++/// `font` picks one; an unknown or empty name means Inter SemiBold.
++static HOST_FONTS: std::sync::Mutex<Vec<(String, &'static [u8])>> = std::sync::Mutex::new(Vec::new());
++
++/// Registers (or replaces) the text style `name` with the font file `bytes`.
++pub fn register_font(name: &str, bytes: &'static [u8]) {
++    let mut fonts = HOST_FONTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
++    fonts.retain(|(n, _)| n != name);
++    fonts.push((name.to_string(), bytes));
++}
++
++/// The font file registered as `name`.
++pub fn registered_font(name: &str) -> Option<&'static [u8]> {
++    HOST_FONTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|(n, _)| n == name).map(|(_, b)| *b)
++}
++
++/// [`faces`] with `primary` (a font file) in the place of Inter SemiBold as the first face.
++pub fn faces_with(primary: Option<&'static [u8]>, craft: &'static [crate::fonts::CraftFont]) -> Vec<FontRef<'static>> {
+     let mut cjk: Vec<_> = crate::fonts::cjk(craft).collect();
+     cjk.sort_by_key(|f| !f.is_mincho());
+-    std::iter::once(TEXT_FONT).chain(cjk.into_iter().map(|f| f.bytes)).filter_map(|bytes| FontRef::try_from_slice(bytes).ok()).collect()
++    // the chosen style first, Inter behind it for the characters it lacks
++    primary.into_iter().chain(std::iter::once(TEXT_FONT)).chain(cjk.into_iter().map(|f| f.bytes)).filter_map(|bytes| FontRef::try_from_slice(bytes).ok()).collect()
+ }
+ 
+ /// Shape a whole grapheme in one cell. CJK uses vertical origins and forms; Latin stays upright.
+@@ -67,6 +89,11 @@ impl TextLayout {
+     /// `text` (cut at [`MAX_CHARS`]) at `px` pixels a line; `None` when there is nothing to draw
+     /// (empty text, a non-finite or non-positive size).
+     pub fn new(text: &str, px: f32, vertical: bool, craft: &'static [crate::fonts::CraftFont]) -> Option<TextLayout> {
++        Self::with_font(text, px, vertical, craft, None)
++    }
++
++    /// [`Self::new`] drawn in the font file `primary` (when it parses) instead of Inter SemiBold.
++    pub fn with_font(text: &str, px: f32, vertical: bool, craft: &'static [crate::fonts::CraftFont], primary: Option<&'static [u8]>) -> Option<TextLayout> {
+         use unicode_segmentation::UnicodeSegmentation;
+         if text.is_empty() || !px.is_finite() || px <= 0.0 {
+             return None;
+@@ -75,7 +102,7 @@ impl TextLayout {
+             Some((i, _)) => text.get(..i).unwrap_or(text),
+             None => text,
+         };
+-        let fonts = faces(craft);
++        let fonts = faces_with(primary, craft);
+         let latin = fonts.first()?.clone();
+         let vertical_data: Vec<_> = if vertical {
+             fonts.iter().map(|font| harfrust::FontRef::new(font.font_data()).ok().map(|face| harfrust::ShaperData::new(&face))).collect()
+diff --git a/crates/engine/src/watermark_tile.rs b/crates/engine/src/watermark_tile.rs
+new file mode 100644
+index 0000000..9a5297c
+--- /dev/null
++++ b/crates/engine/src/watermark_tile.rs
+@@ -0,0 +1,242 @@
++//! Watermarks that are tiled over the photo and/or turned by any angle (Android port).
++//!
++//! The text (or the graphic) is first drawn once into a small *sprite*: a buffer of coverage values (and, for a
++//! graphic, its colours). The photo's pixels are then mapped back into the sprite with the inverse of the turn, so
++//! the edges of a turned watermark stay smooth (a pixel is never skipped, which forward mapping would do). A single
++//! watermark visits only the pixels of the turned box; a mosaic visits every pixel once, folding the position into
++//! the pattern's period (rows offset by half a tile, like bricks).
++
++use crate::export::{Anchor, Watermark, srgb8_in};
++
++/// A watermark drawn once: coverage (0..1) per pixel, and the colour of each pixel for a graphic (text uses the
++/// watermark's colour).
++struct Sprite {
++    w: usize,
++    h: usize,
++    cov: Vec<f32>,
++    rgb: Option<Vec<[u8; 3]>>,
++}
++
++/// Empty margin around the text, so that the smooth sampling at its edges has something to read.
++const PAD: usize = 3;
++
++impl Sprite {
++    /// The coverage at the (fractional) sprite position (`x`, `y`), bilinear; 0 outside.
++    fn cov_at(&self, x: f32, y: f32) -> f32 {
++        let (fx, fy) = (x - 0.5, y - 0.5);
++        let (x0, y0) = (fx.floor(), fy.floor());
++        let (tx, ty) = (fx - x0, fy - y0);
++        let at = |ix: i32, iy: i32| -> f32 {
++            if ix < 0 || iy < 0 || ix as usize >= self.w || iy as usize >= self.h {
++                0.0
++            } else {
++                self.cov.get(iy as usize * self.w + ix as usize).copied().unwrap_or(0.0)
++            }
++        };
++        let (ix, iy) = (x0 as i32, y0 as i32);
++        let top = at(ix, iy) * (1.0 - tx) + at(ix + 1, iy) * tx;
++        let bottom = at(ix, iy + 1) * (1.0 - tx) + at(ix + 1, iy + 1) * tx;
++        top * (1.0 - ty) + bottom * ty
++    }
++
++    /// The colour of the graphic at (`x`, `y`) (nearest pixel); `None` for text.
++    fn colour_at(&self, x: f32, y: f32) -> Option<[u8; 3]> {
++        let rgb = self.rgb.as_ref()?;
++        let (ix, iy) = ((x.floor().max(0.0) as usize).min(self.w.saturating_sub(1)), (y.floor().max(0.0) as usize).min(self.h.saturating_sub(1)));
++        rgb.get(iy * self.w + ix).copied()
++    }
++}
++
++/// The text of `wm` as a sprite at `px` pixels a line.
++fn text_sprite(wm: &Watermark, px: f32, craft: &'static [crate::fonts::CraftFont]) -> Option<Sprite> {
++    let text = wm.text.trim();
++    if text.is_empty() {
++        return None;
++    }
++    let layout = crate::text::TextLayout::with_font(text, px, wm.vertical, craft, crate::text::registered_font(&wm.font))?;
++    let (w, h) = ((layout.width.ceil() as usize).saturating_add(2 * PAD), (layout.height.ceil() as usize).saturating_add(2 * PAD));
++    // a sprite the size of a huge font would be a huge buffer: cap it
++    if w == 0 || h == 0 || w.saturating_mul(h) > 64_000_000 {
++        return None;
++    }
++    let mut cov = vec![0.0f32; w * h];
++    layout.draw_points(|x, y, c| {
++        let (ix, iy) = ((x + PAD as f32).round() as i32, (y + PAD as f32).round() as i32);
++        if ix >= 0 && iy >= 0 && (ix as usize) < w && (iy as usize) < h {
++            if let Some(v) = cov.get_mut(iy as usize * w + ix as usize) {
++                *v = v.max(c);
++            }
++        }
++    });
++    Some(Sprite { w, h, cov, rgb: None })
++}
++
++/// The graphic of `wm` as a sprite `width_px` wide.
++fn logo_sprite(wm: &Watermark, width_px: usize) -> Option<Sprite> {
++    let logo = crate::export::watermark_logo(wm.image.trim())?;
++    if logo.width == 0 || logo.height == 0 {
++        return None;
++    }
++    let lw = width_px.clamp(1, 8192);
++    let lh = ((lw as f32 * logo.height as f32 / logo.width as f32).round() as usize).clamp(1, 8192);
++    let pre: lightcraft_raster::Image<[f32; 4]> = lightcraft_raster::Image::from_fn(logo.width, logo.height, |x, y| {
++        let p = logo.get(x, y);
++        let a = p[3] as f32 / 255.0;
++        [p[0] as f32 * a, p[1] as f32 * a, p[2] as f32 * a, a]
++    });
++    let scaled = lightcraft_raster::resample::resize(&pre, lw, lh, lightcraft_raster::resample::Filter::Mitchell);
++    let space = wm.target.unwrap_or(crate::export::OutputSpace::Srgb);
++    let mut cov = Vec::with_capacity(lw * lh);
++    let mut rgb = Vec::with_capacity(lw * lh);
++    for y in 0..lh {
++        for x in 0..lw {
++            let [r, g, b, a] = scaled.get(x, y);
++            let a = a.clamp(0.0, 1.0);
++            cov.push(a);
++            let c = if a > 1e-4 { [r, g, b].map(|v| (v / a).round().clamp(0.0, 255.0) as u8) } else { [0, 0, 0] };
++            rgb.push(srgb8_in(space, c));
++        }
++    }
++    Some(Sprite { w: lw, h: lh, cov, rgb: Some(rgb) })
++}
++
++/// Draws `wm` onto a `width × height` photo: calls `blend(x, y, coverage × opacity, colour)` for every covered pixel
++/// (the shadow pass first), like the quarter-turn path of `export.rs`.
++pub(crate) fn coverage(
++    width: usize,
++    height: usize,
++    wm: &Watermark,
++    craft: &'static [crate::fonts::CraftFont],
++    floor_scale: f32,
++    mut blend: impl FnMut(usize, usize, f32, [u8; 3]),
++) {
++    if width == 0 || height == 0 {
++        return;
++    }
++    let short = width.min(height) as f32;
++    let sprite = if !wm.image.trim().is_empty() {
++        logo_sprite(wm, (wm.image_width.clamp(0.01, 1.0) * width as f32).round() as usize)
++    } else {
++        let px = (wm.size.clamp(0.005, 0.5) * short).max(6.0 * floor_scale);
++        text_sprite(wm, px, craft)
++    };
++    let Some(sprite) = sprite else { return };
++    let is_logo = sprite.rgb.is_some();
++    let theta = (f32::from(wm.rotation) + wm.angle).to_radians();
++    let (sin, cos) = theta.sin_cos();
++    let (sw, sh) = (sprite.w as f32, sprite.h as f32);
++    let opacity = wm.opacity.clamp(0.0, 1.0);
++    // the shadow of text falls down and to the right, in photo coordinates
++    let px = (wm.size.clamp(0.005, 0.5) * short).max(6.0 * floor_scale);
++    let passes: Vec<(f32, bool, f32)> = if wm.shadow && !is_logo { vec![((px * 0.05).max(floor_scale), true, 0.45), (0.0, false, 1.0)] } else { vec![(0.0, false, 1.0)] };
++
++    if wm.tile {
++        let gap = wm.gap.clamp(0.0, 1.0) * short;
++        let (pw, ph) = (sw + gap, sh + gap);
++        let (cx, cy) = (width as f32 / 2.0, height as f32 / 2.0);
++        for &(off, shadow, a) in &passes {
++            for y in 0..height {
++                for x in 0..width {
++                    // the photo's pixel in the pattern's own axes (the pattern is turned by theta about the middle)
++                    let (dx, dy) = (x as f32 + 0.5 - off - cx, y as f32 + 0.5 - off - cy);
++                    let (u, v) = (dx * cos + dy * sin, -dx * sin + dy * cos);
++                    let row = (v / ph).floor();
++                    let u = u + if (row as i64).rem_euclid(2) == 1 { pw / 2.0 } else { 0.0 };
++                    let fu = u - (u / pw).floor() * pw;
++                    let fv = v - row * ph;
++                    if fu >= sw || fv >= sh {
++                        continue;
++                    }
++                    let k = sprite.cov_at(fu, fv) * a * opacity;
++                    if k <= 1e-3 {
++                        continue;
++                    }
++                    let colour = if shadow { [0, 0, 0] } else { sprite.colour_at(fu, fv).unwrap_or(wm.color) };
++                    blend(x, y, k.min(1.0), colour);
++                }
++            }
++        }
++        return;
++    }
++
++    // a single watermark: placed by its turned bounding box, like the unturned one
++    let (bw, bh) = (sw * cos.abs() + sh * sin.abs(), sw * sin.abs() + sh * cos.abs());
++    let (ix, iy) = (wm.inset_x.clamp(0.0, 0.4) * short, wm.inset_y.clamp(0.0, 0.4) * short);
++    let (w, h) = (width as f32, height as f32);
++    use Anchor::*;
++    let ox = match wm.anchor {
++        TopLeft | Left | BottomLeft => ix,
++        Top | Center | Bottom => (w - bw) / 2.0,
++        TopRight | Right | BottomRight => w - ix - bw,
++    };
++    let oy = match wm.anchor {
++        TopLeft | Top | TopRight => iy,
++        Left | Center | Right => (h - bh) / 2.0,
++        BottomLeft | Bottom | BottomRight => h - iy - bh,
++    };
++    let (cx, cy) = (ox + bw / 2.0, oy + bh / 2.0);
++    for &(off, shadow, a) in &passes {
++        let (x0, x1) = (((ox + off).floor().max(0.0)) as usize, ((ox + off + bw).ceil().max(0.0) as usize).min(width));
++        let (y0, y1) = (((oy + off).floor().max(0.0)) as usize, ((oy + off + bh).ceil().max(0.0) as usize).min(height));
++        for y in y0..y1 {
++            for x in x0..x1 {
++                let (dx, dy) = (x as f32 + 0.5 - off - cx, y as f32 + 0.5 - off - cy);
++                // back into the sprite: undo the turn about its middle
++                let (u, v) = (dx * cos + dy * sin + sw / 2.0, -dx * sin + dy * cos + sh / 2.0);
++                if u < 0.0 || v < 0.0 || u >= sw || v >= sh {
++                    continue;
++                }
++                let k = sprite.cov_at(u, v) * a * opacity;
++                if k <= 1e-3 {
++                    continue;
++                }
++                let colour = if shadow { [0, 0, 0] } else { sprite.colour_at(u, v).unwrap_or(wm.color) };
++                blend(x, y, k.min(1.0), colour);
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// How many pixels of a `w × h` black photo a watermark paints.
++    fn painted(w: usize, h: usize, wm: &Watermark) -> usize {
++        let mut n = 0;
++        coverage(w, h, wm, &[], 1.0, |_, _, k, _| {
++            if k > 0.2 {
++                n += 1;
++            }
++        });
++        n
++    }
++
++    #[test]
++    fn a_mosaic_covers_the_whole_photo_and_a_single_mark_only_its_corner() {
++        let text = Watermark { text: "LightCraft".into(), size: 0.08, shadow: false, ..Default::default() };
++        let single = painted(600, 400, &text);
++        let tiled = painted(600, 400, &Watermark { tile: true, ..text.clone() });
++        assert!(single > 100, "{single}");
++        assert!(tiled > single * 4, "mosaic {tiled} vs single {single}");
++        // a painted pixel in each quarter of the photo
++        let mut quarters = [false; 4];
++        coverage(600, 400, &Watermark { tile: true, ..text }, &[], 1.0, |x, y, k, _| {
++            if k > 0.2 {
++                quarters[usize::from(x >= 300) + 2 * usize::from(y >= 200)] = true;
++            }
++        });
++        assert!(quarters.iter().all(|q| *q), "{quarters:?}");
++    }
++
++    #[test]
++    fn a_turned_mark_keeps_its_size_and_stays_on_the_photo() {
++        let text = Watermark { text: "LightCraft".into(), size: 0.08, shadow: false, ..Default::default() };
++        let flat = painted(600, 400, &text);
++        let diagonal = painted(600, 400, &Watermark { angle: -45.0, ..text.clone() });
++        assert!(diagonal as f32 > flat as f32 * 0.7 && (diagonal as f32) < flat as f32 * 1.4, "{diagonal} vs {flat}");
++        let mut inside = true;
++        coverage(600, 400, &Watermark { angle: -45.0, ..text }, &[], 1.0, |x, y, _, _| inside &= x < 600 && y < 400);
++        assert!(inside);
++    }
++}
