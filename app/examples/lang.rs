@@ -32,6 +32,16 @@ fn main() {
     let _ = host.app.run("view.photoGrid", json!({}));
     host.settle(Duration::from_secs(5));
     save(&host.snapshot(Duration::from_secs(5)), &out.join(format!("{code}-grid.png")));
+    // a photo with edits, so that the edited badge shows
+    let first = host.app.session.visible().first().copied();
+    if let Some(id) = first {
+        let _ = host.app.run("develop.set", json!({"ids": [id.0], "control": "light.exposure", "value": 0.5}));
+    }
+    host.settle(Duration::from_secs(3));
+    lightcraft_android::mobile::set_select_mode(&host.view.ctx, true);
+    host.settle(Duration::from_secs(2));
+    save(&host.snapshot(Duration::from_secs(5)), &out.join(format!("{code}-select.png")));
+    lightcraft_android::mobile::set_select_mode(&host.view.ctx, false);
     lightcraft_android::mobile::open_settings(&host.view.ctx, true);
     host.settle(Duration::from_secs(2));
     save(&host.snapshot(Duration::from_secs(5)), &out.join(format!("{code}-settings.png")));

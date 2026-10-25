@@ -38,6 +38,14 @@ phone and tablet interface modelled on Lightroom for Android.
   parade, with clipping markers and the average level of each channel.
 - **Masking**: the colour range mask is picked with the same kind of ring as the white balance; a +/1 chip adds more
   samples (up to 5) instead of a Shift-click.
+- **Menu and Settings**: the menu button next to the app name opens Settings: the interface language (English,
+  Spanish, German, French, Croatian, Romanian, Hungarian, Slovak, Polish, Norwegian, Ukrainian, Russian, Italian;
+  Automatic follows the system language and falls back to English), the export settings (format, quality, size,
+  colour space, metadata, destination folder, default `DCIM/LightCraft`) and the copyright information that is
+  written into exported files.
+- **Export**: the export button at the top right of the edit screen saves the photo with those settings; in the
+  selection mode it exports the selected photos, all photos or only the edited ones. Edited photos carry a badge in
+  the bottom left corner of their thumbnail.
 - **Touch behaviour**: a slider moves only when its thumb is dragged (a tap on the track or a scroll that
   starts on it changes nothing; tap the number to type an exact value). Menus stay open until a tap outside
   them, long menus scroll, and submenus unfold on a tap.
@@ -77,6 +85,8 @@ What changed in each version is listed in the [Changelog](CHANGELOG.md).
 ```
 app/src/lib.rs        crate root
 app/src/mobile.rs     the phone / tablet layout: library, edit screen, tool bar, file browser, lens profile chooser
+app/src/settings.rs   the Settings screen, the preferences and the export
+app/src/i18n.rs       translation of the strings of this crate (app/locales/host.json)
 app/src/crop.rs       the Crop sheet
 app/src/histogram.rs  the histogram card
 app/src/welcome.rs    the welcome screen and its generated picture
@@ -97,6 +107,8 @@ The upstream crates are used as they are, except for the patches in `patches/`:
 | `0002-touch-friendly-widgets` | scrolling context menus that close on a tap outside, tap-to-unfold submenus, sliders that only the thumb moves |
 | `0003-light-and-noise-reduction` | adaptive Auto light and the wavelet noise reduction (GPU render falls back to the CPU filter) |
 | `0004-lens-profiles` | a reloadable lens database, the lens profile commands, the chosen profile in the render |
+| `0007-touch-edited-badge` | the edited badge is always drawn on a thumbnail (a touch screen has no hover) |
+| `0006-more-languages` | Croatian, Romanian, Hungarian, Slovak and Norwegian catalogs for the upstream interface |
 | `0005-touch-selectors` | a draggable ring with check and cancel buttons for the white balance selector and the colour range mask (with an add-sample switch instead of Shift-click) |
 
 The phone layout in `app/src/mobile.rs` reuses upstream widgets: the photo grid, the loupe, the slider row and
@@ -143,7 +155,7 @@ Run `./scripts/fetch-upstream.sh` once before the first desktop build.
 - The masking, remove and presets panels are the upstream desktop panels shown in a sheet.
 - The app ships no lens profiles; load a lensfun database (CC-BY-SA, <https://github.com/lensfun/lensfun>, folder `data/db`).
 - Export and sharing are not wired to the Android share sheet yet.
-- The interface is English only.
+- The interface is translated into 13 languages (machine-assisted; corrections are welcome). Strings that have no translation stay English.
 
 ## Licence
 

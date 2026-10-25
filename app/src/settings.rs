@@ -56,7 +56,7 @@ impl Default for Prefs {
             color_space: "srgb".into(),
             metadata: "all".into(),
             remove_location: false,
-            folder: platform().storage_root.join("Pictures").join("LightCraft").to_string_lossy().into_owned(),
+            folder: platform().storage_root.join("DCIM").join("LightCraft").to_string_lossy().into_owned(),
             creator: String::new(),
             copyright: String::new(),
             write_copyright: true,
@@ -255,25 +255,59 @@ fn copyright_section(app: &mut LightcraftApp, ui: &mut egui::Ui, p: &mut Prefs) 
     }
 }
 
-/// Exports the active photo with the saved export settings, in the background. The copyright and creator
-/// are first added to the photo when it has none. Returns the folder written to, or the error text.
+/// Which photos a group export takes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// The photos ticked in the library.
+    Selected,
+    /// Every photo shown in the library.
+    All,
+    /// The shown photos that have been edited.
+    Edited,
+}
+
+/// The photos of `scope`, in library order.
+pub fn photos_of(app: &mut LightcraftApp, scope: Scope) -> Vec<lightcraft_catalog::PhotoId> {
+    let visible = app.session.visible_shared().1;
+    match scope {
+        Scope::All => visible.to_vec(),
+        Scope::Selected => visible.iter().copied().filter(|id| app.session.selection.ids.contains(id)).collect(),
+        Scope::Edited => visible.iter().copied().filter(|id| app.session.catalog.photo(*id).is_some_and(|p| p.is_edited())).collect(),
+    }
+}
+
+/// Exports the active photo with the saved export settings, in the background. Returns the folder written to, or the error text.
 pub fn export_active(app: &mut LightcraftApp) -> Result<String, String> {
-    let p = get();
     let id = app.session.active().ok_or_else(|| tr("Select a photo to edit"))?;
+    export_ids(app, &[id]).map(|(_, dir)| dir)
+}
+
+/// Exports `ids` with the saved export settings, in the background. The copyright and creator are first added to the
+/// photos that have none. Returns the number of photos and the folder written to, or the error text.
+pub fn export_ids(app: &mut LightcraftApp, ids: &[lightcraft_catalog::PhotoId]) -> Result<(usize, String), String> {
+    let p = get();
+    if ids.is_empty() {
+        return Err(tr("Nothing to export"));
+    }
     std::fs::create_dir_all(&p.folder).map_err(|e| e.to_string())?;
     let mut metadata = p.metadata.clone();
-    if p.write_copyright && (!p.copyright.trim().is_empty() || !p.creator.trim().is_empty()) {
-        let (has_c, has_n) = app.session.catalog.photo(id).map(|ph| (!ph.meta.copyright.is_empty(), !ph.meta.creator.is_empty())).unwrap_or((true, true));
-        let mut fields = serde_json::Map::new();
-        if !has_c && !p.copyright.trim().is_empty() {
-            fields.insert("copyright".into(), json!(p.copyright.trim()));
-        }
-        if !has_n && !p.creator.trim().is_empty() {
-            fields.insert("creator".into(), json!(p.creator.trim()));
-        }
-        if !fields.is_empty() {
-            fields.insert("ids".into(), json!([id.0]));
-            app.run("photo.setMeta", serde_json::Value::Object(fields))?;
+    let (copyright, creator) = (p.copyright.trim(), p.creator.trim());
+    if p.write_copyright && (!copyright.is_empty() || !creator.is_empty()) {
+        // each field only goes to the photos that have none, so a photo's own text is never replaced
+        for (field, value) in [("copyright", copyright), ("creator", creator)] {
+            if value.is_empty() {
+                continue;
+            }
+            let lacking: Vec<u64> = ids
+                .iter()
+                .filter(|id| {
+                    app.session.catalog.photo(**id).is_some_and(|ph| if field == "copyright" { ph.meta.copyright.is_empty() } else { ph.meta.creator.is_empty() })
+                })
+                .map(|id| id.0)
+                .collect();
+            if !lacking.is_empty() {
+                app.run("photo.setMeta", json!({"ids": lacking, field: value}))?;
+            }
         }
         // "Nothing" would strip the notice that was just asked for
         if metadata == "none" {
@@ -281,12 +315,12 @@ pub fn export_active(app: &mut LightcraftApp) -> Result<String, String> {
         }
     }
     let mut params = json!({
-        "ids": [id.0], "format": p.format, "quality": p.quality, "colorSpace": p.color_space,
+        "ids": ids.iter().map(|id| id.0).collect::<Vec<_>>(), "format": p.format, "quality": p.quality, "colorSpace": p.color_space,
         "metadata": metadata, "removeLocation": p.remove_location, "dir": p.folder, "background": true,
     });
     if p.long_edge > 0 {
         params["longEdge"] = json!(p.long_edge);
     }
     app.run("app.export", params)?;
-    Ok(p.folder)
+    Ok((ids.len(), p.folder))
 }

@@ -28,3 +28,4 @@ save 0003-light-and-noise-reduction crates/pipeline/src/auto.rs crates/pipeline/
 save 0004-lens-profiles crates/develop/src/settings.rs crates/pipeline/src/optics.rs crates/engine/src/lens_profiles.rs crates/engine/src/cmd/lens.rs crates/engine/src/cmd/mod.rs crates/engine/src/media.rs
 save 0005-touch-selectors crates/ui-egui/src/panels/detail.rs crates/ui-egui/src/panels/masking.rs
 save 0006-more-languages crates/ui-egui/src/i18n.rs crates/ui-egui/locales/hr.json crates/ui-egui/locales/ro.json crates/ui-egui/locales/hu.json crates/ui-egui/locales/sk.json crates/ui-egui/locales/no.json
+save 0007-touch-edited-badge crates/ui-egui/src/panels/grid.rs

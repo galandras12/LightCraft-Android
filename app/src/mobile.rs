@@ -288,6 +288,55 @@ fn menu_button(ui: &mut egui::Ui) -> egui::Response {
     response
 }
 
+/// The export button of the top bars: a frame with an arrow leaving it to the right. Drawn here (original artwork) because
+/// the upstream icon set has no export icon.
+fn export_button(ui: &mut egui::Ui, id: &str) -> egui::Response {
+    let t = Tokens::get(ui.ctx());
+    let (rect, response) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::click());
+    let response = response.on_hover_text(tr("Export"));
+    let _ = id;
+    let p = ui.painter();
+    let color = if response.is_pointer_button_down_on() { t.text } else { t.icon };
+    let c = rect.center();
+    let stroke = Stroke::new(2.2, color);
+    // the frame: open at the bottom right, where the arrow leaves
+    let (l, r, top, bot) = (c.x - 11.0, c.x + 5.0, c.y - 8.0, c.y + 8.0);
+    p.add(egui::Shape::line(vec![egui::pos2(r, top + 3.0), egui::pos2(r, top), egui::pos2(l, top), egui::pos2(l, bot), egui::pos2(c.x - 4.0, bot)], stroke));
+    // the arrow: a shaft bending up from inside the frame, and a head pointing right
+    p.add(egui::Shape::line(vec![egui::pos2(c.x - 6.0, c.y + 3.0), egui::pos2(c.x - 2.0, c.y - 2.0), egui::pos2(c.x + 5.0, c.y - 2.0)], stroke));
+    p.add(egui::Shape::convex_polygon(
+        vec![egui::pos2(c.x + 4.0, c.y - 8.0), egui::pos2(c.x + 12.0, c.y - 2.0), egui::pos2(c.x + 4.0, c.y + 4.0)],
+        color,
+        Stroke::NONE,
+    ));
+    response
+}
+
+/// The group export menu of the selection mode: asks which photos to export, then starts the export with the saved settings.
+fn group_export_menu(app: &mut LightcraftApp, ui: &mut egui::Ui) {
+    use crate::settings::{Scope, export_ids, photos_of};
+    ui.set_min_width(240.0);
+    let mut chosen = None;
+    for (scope, label) in [
+        (Scope::Selected, "Only the selected photos"),
+        (Scope::All, "All photos"),
+        (Scope::Edited, "Only the edited photos"),
+    ] {
+        let n = photos_of(app, scope).len();
+        if ui.add_enabled(n > 0, egui::Button::new(format!("{} ({n})", tr(label)))).clicked() {
+            chosen = Some(scope);
+        }
+    }
+    if let Some(scope) = chosen {
+        let ids = photos_of(app, scope);
+        match export_ids(app, &ids) {
+            Ok((n, dir)) => app.toast(ui.ctx(), tf("Exporting {n} photos to {dir}", &[("n", n.to_string()), ("dir", dir)])),
+            Err(e) => app.toast(ui.ctx(), e),
+        }
+        ui.close();
+    }
+}
+
 /// A 44 x 44 point icon button of the top bar.
 pub(crate) fn icon_btn(ui: &mut egui::Ui, id: &str, icon: Icon, active: bool, enabled: bool, tip: &str) -> egui::Response {
     widgets::icon_button(ui, id, icon, vec2(44.0, 44.0), active, enabled, &tr(tip))
@@ -329,6 +378,13 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
                     // Overflow menu ("...").
                     let more = icon_btn(ui, "m_more", Icon::More, false, true, "More");
                     egui::Popup::menu(&more).show(|ui| detail_menu(app, ui));
+                    // Export: saves the photo with the export settings of the Settings screen.
+                    if export_button(ui, "m_export").clicked() {
+                        match crate::settings::export_active(app) {
+                            Ok(dir) => app.toast(ui.ctx(), tf("Exporting to {dir}", &[("dir", dir)])),
+                            Err(e) => app.toast(ui.ctx(), e),
+                        }
+                    }
                     // Undo: a text button, disabled look when there is nothing to undo.
                     let can_undo = !app.session.undo.is_empty();
                     if widgets::text_button(ui, "m_undo", &tr("Undo"), false).clicked() && can_undo {
@@ -347,6 +403,11 @@ fn top_bar(app: &mut LightcraftApp, ui: &mut egui::Ui, st: &mut State, detail: b
                 }
                 let n = app.session.selection.ids.len();
                 ui.label(RichText::new(tf("{n} selected", &[("n", n.to_string())])).size(17.0).strong().color(t.text));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    // Group export: a list asks which photos to export.
+                    let export = export_button(ui, "m_group_export");
+                    egui::Popup::menu(&export).show(|ui| group_export_menu(app, ui));
+                });
             } else {
                 // The menu button (three horizontal lines) next to the app name: opens the list with Settings.
                 let menu = menu_button(ui);

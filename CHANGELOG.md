@@ -7,6 +7,20 @@ fixed on that day. Entries are written in English.
 
 ### Added
 
+- **Menu and Settings**: the library's top bar has a menu button (three lines) next to the app name; it opens a list
+  with **Settings**. Settings holds the interface language, the export settings and the copyright information.
+- **Interface languages**: English, Spanish, German, French, Croatian, Romanian, Hungarian, Slovak, Polish,
+  Norwegian, Ukrainian, Russian and Italian. **Automatic** follows the system language; a system language outside
+  that list shows English. The language can also be chosen by hand. Croatian, Romanian, Hungarian, Slovak and
+  Norwegian catalogs were added to the upstream interface (patch 0006); the others come from upstream.
+- **Export settings**: file format (JPEG, PNG, TIFF, WebP), quality, size, colour space, which metadata the file
+  carries, removing the GPS position, and the destination folder (default `DCIM/LightCraft`).
+- **Copyright information**: creator and copyright notice, written into exported files (and optionally added to
+  photos when they are imported).
+- **Export button** at the top right of the edit screen: saves the photo with the export settings. In the
+  library's selection mode the same button asks which photos to export: the selected ones, all, or only the edited.
+- **Edited badge**: every thumbnail of an edited photo shows a small badge in its bottom left corner (the stars
+  and the flag follow it).
 - **Enable lens corrections** switch in the Optics tab, which turns the embedded lens data of the file (DNG,
   and the Sony, Nikon, Fujifilm and Panasonic conversions of the engine) or the chosen database profile on or off.
 - **Automatic chromatic aberration removal** switch at the top of the Optics tab (below the lens profile). The

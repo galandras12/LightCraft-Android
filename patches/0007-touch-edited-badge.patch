@@ -1,0 +1,39 @@
+Android port: the badge of an edited photo.
+
+The grid shows the edited badge only for a hovered, selected or rated photo, and a touch screen has no hover. With a host
+layout the badge is always drawn at the bottom left corner of the thumbnail; the rating stars and the flag follow it.
+diff --git a/crates/ui-egui/src/panels/grid.rs b/crates/ui-egui/src/panels/grid.rs
+index a118489..0fe7c59 100644
+--- a/crates/ui-egui/src/panels/grid.rs
++++ b/crates/ui-egui/src/panels/grid.rs
+@@ -851,12 +851,20 @@ fn cell(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square
+         // over the photo's bottom edge (opaque, it would hide 24 px of every labelled photo).
+         p.rect_filled(badge_bar, 0.0, crate::theme::label_background(t.cell, photo.label, selected).gamma_multiply(0.7));
+     }
++    // Android port: a touch screen has no hover, so the edited badge is always shown, at the bottom left corner
++    // (the ratings and the flag follow it).
++    let touch_edited = app.mobile_layout.is_some() && photo.is_edited();
++    if touch_edited {
++        let c = pos2(badge_bar.left() + 15.0, badge_bar.center().y);
++        p.circle_filled(c, 11.0, Color32::from_black_alpha(165));
++        paint(p, Rect::from_center_size(c, vec2(14.0, 14.0)), Icon::Sliders, Color32::WHITE);
++    }
+     if show_badges {
+         let bar = badge_bar;
+         if (resp.hovered() || selected) && (square || photo.label.is_none()) {
+             p.rect_filled(bar, 0.0, Color32::from_black_alpha(120));
+         }
+-        let mut x = bar.left() + 6.0;
++        let mut x = bar.left() + 6.0 + if touch_edited { 26.0 } else { 0.0 };
+         for i in 0..photo.rating {
+             paint(p, Rect::from_min_size(pos2(x + i as f32 * 13.0, bar.center().y - 6.0), vec2(12.0, 12.0)), Icon::StarFilled, t.star);
+         }
+@@ -867,7 +875,7 @@ fn cell(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square
+             Flag::None => {}
+         }
+         let mut right = bar.right();
+-        if photo.is_edited() {
++        if photo.is_edited() && !touch_edited {
+             paint(p, Rect::from_min_size(pos2(right - 20.0, bar.center().y - 7.0), vec2(14.0, 14.0)), Icon::Sliders, t.text_label);
+             right -= 20.0;
+         }
