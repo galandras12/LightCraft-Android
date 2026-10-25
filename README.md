@@ -41,7 +41,7 @@ phone and tablet interface modelled on Lightroom for Android.
 - **Menu and Settings**: the menu button next to the app name opens Settings: the interface language (English,
   Spanish, German, French, Croatian, Romanian, Hungarian, Slovak, Polish, Norwegian, Ukrainian, Russian, Italian;
   Automatic follows the system language and falls back to English), the export settings (format, quality, size,
-  colour space, metadata, destination folder, default `DCIM/LightCraft`) and the copyright information that is
+  colour space, metadata, HDR, destination folder, default `DCIM/LightCraft`, and whether exported photos show in the gallery) and the copyright information that is
   written into exported files.
 - **Export**: the export button at the top right of the edit screen saves the photo with those settings; in the
   selection mode it exports the selected photos, all photos or only the edited ones. Edited photos carry a badge in

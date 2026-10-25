@@ -34,6 +34,10 @@ pub struct Prefs {
     pub metadata: String,
     /// Leave the GPS position out of exported files.
     pub remove_location: bool,
+    /// Keep HDR in exported files of photos that were edited in HDR (JPEG gain map, PNG / AVIF / JPEG XL in PQ).
+    pub keep_hdr: bool,
+    /// Let the gallery apps of the device show the exported photos (off: a `.nomedia` file hides the folder).
+    pub show_in_gallery: bool,
     /// The folder exported files are written to.
     pub folder: String,
     /// The creator (author) name.
@@ -56,6 +60,8 @@ impl Default for Prefs {
             color_space: "srgb".into(),
             metadata: "all".into(),
             remove_location: false,
+            keep_hdr: true,
+            show_in_gallery: true,
             folder: platform().storage_root.join("DCIM").join("LightCraft").to_string_lossy().into_owned(),
             creator: String::new(),
             copyright: String::new(),
@@ -109,7 +115,7 @@ pub fn wanted_language(p: &Prefs) -> Locale {
 }
 
 /// The export formats of the Settings screen: (code, label).
-const FORMATS: [(&str, &str); 4] = [("jpeg", "JPEG"), ("png", "PNG"), ("tiff", "TIFF"), ("webp", "WebP")];
+const FORMATS: [(&str, &str); 6] = [("jpeg", "JPEG"), ("png", "PNG"), ("tiff", "TIFF"), ("webp", "WebP"), ("avif", "AVIF"), ("jxl", "JPEG XL")];
 /// The sizes of the Settings screen: longest edge in pixels (0 = full size).
 const SIZES: [u32; 6] = [0, 4096, 3072, 2048, 1600, 1080];
 /// The colour spaces: (code, label).
@@ -203,7 +209,7 @@ fn export_section(ui: &mut egui::Ui, p: &mut Prefs) {
             p.format = code;
         }
     });
-    if matches!(p.format.as_str(), "jpeg" | "webp") {
+    if matches!(p.format.as_str(), "jpeg" | "webp" | "avif" | "jxl") {
         row(ui, "Quality", |ui| {
             let mut q = p.quality as f64;
             if ui.add(egui::Slider::new(&mut q, 1.0..=100.0).integer()).changed() {
@@ -231,6 +237,9 @@ fn export_section(ui: &mut egui::Ui, p: &mut Prefs) {
         }
     });
     ui.checkbox(&mut p.remove_location, tr("Remove the GPS position"));
+    // photos edited in HDR stay HDR in the file (JPEG with a gain map, PNG / AVIF / JPEG XL in PQ); other photos are unaffected
+    ui.checkbox(&mut p.keep_hdr, tr("Keep HDR in the file for photos that have it"));
+    ui.checkbox(&mut p.show_in_gallery, tr("Show exported photos in the gallery"));
     ui.add_space(6.0);
     ui.label(tr("Folder for exported files"));
     ui.add(egui::TextEdit::singleline(&mut p.folder).desired_width(f32::INFINITY));
@@ -276,6 +285,29 @@ pub fn photos_of(app: &mut LightcraftApp, scope: Scope) -> Vec<lightcraft_catalo
     }
 }
 
+/// The export folder and the start time of an export whose files the gallery apps have not been told about yet.
+static PENDING_SCAN: Mutex<Option<(std::path::PathBuf, std::time::SystemTime)>> = Mutex::new(None);
+
+/// Once a background export has finished, tells the device's media scanner about the new files so that the
+/// gallery apps show them. Called every frame; does nothing while an export runs or when none is pending.
+pub fn poll_media_scan(app: &LightcraftApp) {
+    if app.export.is_some() {
+        return;
+    }
+    let Some((dir, since)) = PENDING_SCAN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() else { return };
+    let since = since.checked_sub(std::time::Duration::from_secs(5)).unwrap_or(since);
+    let files: Vec<String> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t >= since))
+        .map(|e| e.path().to_string_lossy().into_owned())
+        .collect();
+    if !files.is_empty() {
+        (platform().scan_media)(&files);
+    }
+}
+
 /// Exports the active photo with the saved export settings, in the background. Returns the folder written to, or the error text.
 pub fn export_active(app: &mut LightcraftApp) -> Result<String, String> {
     let id = app.session.active().ok_or_else(|| tr("Select a photo to edit"))?;
@@ -316,11 +348,21 @@ pub fn export_ids(app: &mut LightcraftApp, ids: &[lightcraft_catalog::PhotoId]) 
     }
     let mut params = json!({
         "ids": ids.iter().map(|id| id.0).collect::<Vec<_>>(), "format": p.format, "quality": p.quality, "colorSpace": p.color_space,
-        "metadata": metadata, "removeLocation": p.remove_location, "dir": p.folder, "background": true,
+        "metadata": metadata, "removeLocation": p.remove_location, "dir": p.folder, "background": true, "hdr": p.keep_hdr,
     });
     if p.long_edge > 0 {
         params["longEdge"] = json!(p.long_edge);
     }
+    // the gallery apps skip a folder that holds a `.nomedia` file
+    let nomedia = std::path::Path::new(&p.folder).join(".nomedia");
+    if p.show_in_gallery {
+        let _ = std::fs::remove_file(&nomedia);
+    } else {
+        let _ = std::fs::write(&nomedia, b"");
+    }
     app.run("app.export", params)?;
+    if p.show_in_gallery {
+        *PENDING_SCAN.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((std::path::PathBuf::from(&p.folder), std::time::SystemTime::now()));
+    }
     Ok((ids.len(), p.folder))
 }

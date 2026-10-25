@@ -1958,5 +1958,33 @@
   "uk": "Експорт {n} фото до {dir}",
   "ru": "Экспорт {n} фото в {dir}",
   "it": "Esportazione di {n} foto in {dir}"
+ },
+ "Keep HDR in the file for photos that have it": {
+  "es": "Conservar HDR en el archivo en las fotos que lo tengan",
+  "de": "HDR in der Datei beibehalten, wenn das Foto HDR hat",
+  "fr": "Conserver le HDR dans le fichier pour les photos qui en ont",
+  "hr": "Zadrži HDR u datoteci za fotografije koje ga imaju",
+  "ro": "Păstrează HDR în fișier pentru fotografiile care îl au",
+  "hu": "HDR megtartása a fájlban, ha a fotó HDR-es",
+  "sk": "Zachovať HDR v súbore pre fotky, ktoré ho majú",
+  "pl": "Zachowaj HDR w pliku dla zdjęć, które go mają",
+  "no": "Behold HDR i filen for bilder som har det",
+  "uk": "Зберігати HDR у файлі для фото, що його мають",
+  "ru": "Сохранять HDR в файле для фото, у которых он есть",
+  "it": "Mantieni l’HDR nel file per le foto che lo hanno"
+ },
+ "Show exported photos in the gallery": {
+  "es": "Mostrar las fotos exportadas en la galería",
+  "de": "Exportierte Fotos in der Galerie anzeigen",
+  "fr": "Afficher les photos exportées dans la galerie",
+  "hr": "Prikaži izvezene fotografije u galeriji",
+  "ro": "Arată fotografiile exportate în galerie",
+  "hu": "Az exportált fotók megjelenítése a galériában",
+  "sk": "Zobraziť exportované fotky v galérii",
+  "pl": "Pokazuj wyeksportowane zdjęcia w galerii",
+  "no": "Vis eksporterte bilder i galleriet",
+  "uk": "Показувати експортовані фото в галереї",
+  "ru": "Показывать экспортированные фото в галерее",
+  "it": "Mostra le foto esportate nella galleria"
  }
 }

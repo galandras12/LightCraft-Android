@@ -1,9 +1,20 @@
 # Changelog
 
 All notable changes to LightCraft for Android, newest date first. Each date lists what was added, changed or
-fixed on that day. Entries are written in English.
+fixed in the APK built on that day; work that is not built yet is listed under Plan. Entries are written in English.
 
-## 2026-10-24
+## Plan
+
+What is being worked on and has not been built into an APK yet. When an APK is built, the finished items move to a
+section with the date of that build.
+
+- **HDR export**: photos edited in HDR keep their HDR in the exported file (JPEG with a gain map, PNG, AVIF and
+  JPEG XL in PQ); a switch in the export settings, on by default. AVIF and JPEG XL are added to the formats.
+- **Gallery option**: a switch in the export settings decides whether the exported photos show up in the device's
+  gallery apps (on by default). The media scanner is told about new files; with the switch off the folder is hidden
+  with a `.nomedia` file.
+
+## 2026-10-25
 
 ### Added
 
@@ -23,6 +34,15 @@ fixed on that day. Entries are written in English.
   and the flag follow it).
 - **Enable lens corrections** switch in the Optics tab, which turns the embedded lens data of the file (DNG,
   and the Sony, Nikon, Fujifilm and Panasonic conversions of the engine) or the chosen database profile on or off.
+
+### Changed
+
+- The **Undo** button of the edit screen is now a U-turn arrow icon (dimmed when there is nothing to undo).
+
+## 2026-10-24
+
+### Added
+
 - **Automatic chromatic aberration removal** switch at the top of the Optics tab (below the lens profile). The
   engine measures the colour fringes of the picture itself; the Red/Cyan and Blue/Yellow sliders fine-tune it.
 - **Close and Cancel in the Add photos browser**: a cross in the top bar and a Cancel button next to Import leave
@@ -41,7 +61,6 @@ fixed on that day. Entries are written in English.
 
 ### Changed
 
-- The **Undo** button of the edit screen is now a U-turn arrow icon (dimmed when there is nothing to undo).
 - The Add photos browser has a second row under the top bar for Sort, Grid or List and Select all.
 - The README install section points to the Releases page, and a changelog was added.
 

@@ -110,6 +110,26 @@ fn system_language() -> String {
     .unwrap_or_default()
 }
 
+/// Asks the media scanner to index `paths`, so that the gallery apps show the new files.
+fn scan_media(paths: &[String]) {
+    with_jni(|env, activity| {
+        let string_class = env.find_class("java/lang/String")?;
+        let list = env.new_object_array(paths.len() as i32, string_class, JObject::null())?;
+        for (i, path) in paths.iter().enumerate() {
+            let text = env.new_string(path)?;
+            env.set_object_array_element(&list, i as i32, text)?;
+        }
+        let none = JObject::null();
+        env.call_static_method(
+            "android/media/MediaScannerConnection",
+            "scanFile",
+            "(Landroid/content/Context;[Ljava/lang/String;[Ljava/lang/String;Landroid/media/MediaScannerConnection$OnScanCompletedListener;)V",
+            &[JValue::Object(activity), JValue::Object(&list), JValue::Object(&none), JValue::Object(&none)],
+        )?;
+        Ok(())
+    });
+}
+
 /// Wraps the upstream app so that `eframe` can drive it.
 struct App(LightcraftApp);
 
@@ -141,6 +161,7 @@ fn android_main(app: AndroidApp) {
         request_storage_access,
         storage_root: "/storage/emulated/0".into(),
         system_language,
+        scan_media,
     });
     let data = app.internal_data_path();
     if let Some(dir) = &data {

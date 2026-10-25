@@ -48,6 +48,8 @@ pub struct Platform {
     pub storage_root: std::path::PathBuf,
     /// The system language as a BCP-47 tag (`hu-HU`), for the Automatic language setting.
     pub system_language: fn() -> String,
+    /// Tells the system's media scanner about new files, so that the gallery apps show them.
+    pub scan_media: fn(&[String]),
 }
 
 /// The platform services, set once by the host at start-up ([`set_platform`]).
@@ -66,6 +68,7 @@ pub(crate) fn platform() -> &'static Platform {
         request_storage_access: || {},
         storage_root: std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(|| "/".into()),
         system_language: || std::env::var("LANG").unwrap_or_default(),
+        scan_media: |_| {},
     })
 }
 
@@ -233,6 +236,7 @@ fn layout(app: &mut LightcraftApp, ui: &mut egui::Ui) {
         app.ui.language = language;
         lightcraft_ui_egui::i18n::set_language(language);
     }
+    crate::settings::poll_media_scan(app);
     let detail = app.ui.view == ViewMode::Detail;
     let wide = ui.max_rect().width() >= WIDE;
     if st.settings {
